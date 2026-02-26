@@ -1,0 +1,17 @@
+snapshot_date,account_id,account_type,account_label,ticker,asset_class,shares,price,market_value,cost_basis,unrealized_gain,qualified_div_yield,annual_income_est,top1_pct,notes
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,AAPL,us_equity,1050,250.00,262500,21500,241000,0.0044,1155.00,true,high embedded gain - avoid selling
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,VTI,us_equity,1200,270.00,324000,280000,44000,0.0130,4212.00,false,broad market ETF
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,VXUS,intl_equity,1500,58.00,87000,82000,5000,0.0290,2523.00,false,international diversification
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,BND,us_bond,800,72.00,57600,59000,-1400,0.0330,1900.80,false,intermediate bonds
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,VGSH,us_bond,1200,58.50,70200,69500,700,0.0380,2667.60,false,short-term treasury
+2025-06-01,TAXABLE_01,taxable,Joint Brokerage,VMFXX,mmf,228700,1.00,228700,228700,0,0.0500,11435.00,false,money market sweep
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,MSFT,us_equity,520,420.00,218400,150000,68400,0.0072,1572.48,false,large cap tech
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,NVDA,us_equity,600,135.00,81000,45000,36000,0.0003,24.30,false,high growth semiconductor
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,AVGO,us_equity,350,180.00,63000,40000,23000,0.0130,819.00,false,Broadcom - dividend grower
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,VTI,us_equity,800,270.00,216000,195000,21000,0.0130,2808.00,false,broad market core
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,BND,us_bond,1800,72.00,129600,132000,-2400,0.0330,4276.80,false,bond ballast
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,VGSH,us_bond,1400,58.50,81900,81000,900,0.0380,3112.20,false,short-term treasury
+2025-06-01,RIRA_01,trad_ira,Rollover IRA,VMFXX,mmf,210100,1.00,210100,210100,0,0.0500,10505.00,false,money market - 20% of IRA
+2025-06-01,IIRA_01,inherited_ira,Inherited IRA (Spouse),BND,us_bond,600,72.00,43200,44000,-800,0.0330,1425.60,false,conservative allocation
+2025-06-01,IIRA_01,inherited_ira,Inherited IRA (Spouse),VGSH,us_bond,500,58.50,29250,29000,250,0.0380,1111.50,false,short duration
+2025-06-01,IIRA_01,inherited_ira,Inherited IRA (Spouse),VMFXX,mmf,12550,1.00,12550,12550,0,0.0500,627.50,false,cash reserve

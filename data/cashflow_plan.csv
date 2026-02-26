@@ -1,0 +1,15 @@
+year,category,subcategory,amount,frequency,inflation_adj,taxable,notes
+2025,income,social_security,56000,annual,true,partial,combined SS for couple - up to 85% taxable
+2025,income,qualified_dividends,6700,annual,false,qualified,qualified divs from taxable account
+2025,income,ordinary_dividends,3300,annual,false,ordinary,non-qualified divs + bond interest taxable acct
+2025,income,ira_interest_divs,6000,annual,false,n/a,earned inside IRA - not taxable until withdrawn
+2025,expense,baseline_living,50000,annual,true,n/a,housing + food + insurance + utilities + transport
+2025,expense,travel,15000,annual,true,n/a,two trips per year
+2025,expense,home_maintenance,10000,annual,true,n/a,aging house repairs
+2025,expense,healthcare_oop,8000,annual,true,n/a,Medicare supplement + dental + vision OOP
+2025,expense,gifts_charity,7000,annual,true,n/a,family gifts and charitable giving
+2025,expense,auto_replace,0,one_time_2027,false,n/a,car replacement placeholder - see lumpy
+2026,expense,roof_repair,18000,one_time,false,n/a,lumpy: roof expected 2026
+2027,expense,auto_replace,35000,one_time,false,n/a,lumpy: vehicle replacement
+2029,expense,grandchild_edu,25000,one_time,false,n/a,lumpy: education gift
+2031,expense,home_accessibility,20000,one_time,false,n/a,lumpy: aging-in-place modifications

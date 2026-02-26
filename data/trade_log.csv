@@ -1,0 +1,8 @@
+trade_date,account_id,action,ticker,shares,price,total_amount,cost_basis_per_share,realized_gain,term,notes
+2025-01-15,TAXABLE_01,sell,VTI,100,265.00,26500,233.33,3167.00,long,tax-loss partner rebalance
+2025-02-10,TAXABLE_01,buy,VXUS,200,56.00,11200,56.00,0,n/a,international rebalance
+2025-03-01,RIRA_01,sell,NVDA,50,130.00,6500,75.00,2750.00,n/a,IRA - no tax impact
+2025-03-01,RIRA_01,buy,BND,90,72.00,6480,72.00,0,n/a,de-risk into bonds
+2025-04-15,TAXABLE_01,sell,AAPL,20,245.00,4900,20.48,4490.40,long,small trim - high gain lot
+2025-05-01,IIRA_01,sell,BND,50,71.50,3575,73.33,0,n/a,inherited IRA distribution
+2025-05-01,IIRA_01,withdraw,CASH,1,3575.00,3575,0,0,n/a,inherited IRA cash distribution

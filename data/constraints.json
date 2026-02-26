@@ -1,0 +1,54 @@
+{
+  "withdrawal_sequence_default": ["taxable", "trad_ira", "inherited_ira", "roth_ira"],
+  "inherited_ira_deadline_year": 2033,
+  "inherited_ira_balance_start": 85000,
+
+  "irmaa_guardrails": {
+    "enabled": true,
+    "target_headroom_below_tier1": 10000,
+    "tier1_magi_mfj": 206000,
+    "note": "Keep MAGI at least $10k below $206k to avoid IRMAA surcharges"
+  },
+
+  "rmd_start_age": 73,
+  "rmd_table": "uniform_lifetime",
+  "rmd_applies_to": ["trad_ira"],
+  "rmd_note": "Inherited IRA has its own 10-year rule; RMD table applies to traditional IRA only",
+
+  "concentration_limits": {
+    "single_stock_max_pct": 0.30,
+    "aapl_flag": {
+      "ticker": "AAPL",
+      "current_pct_taxable": 0.255,
+      "embedded_gain": 241000,
+      "strategy": "do_not_sell_unless_offset_by_losses"
+    }
+  },
+
+  "monte_carlo": {
+    "num_simulations": 1000,
+    "projection_years": 20,
+    "confidence_levels": [0.05, 0.25, 0.50, 0.75, 0.95],
+    "return_assumptions": {
+      "us_equity":   {"mean": 0.07, "std": 0.16},
+      "intl_equity": {"mean": 0.06, "std": 0.18},
+      "us_bond":     {"mean": 0.035,"std": 0.05},
+      "mmf":         {"mean": 0.04, "std": 0.005}
+    },
+    "inflation": {"mean": 0.025, "std": 0.01}
+  },
+
+  "aggressiveness_score": {
+    "description": "0-100 scale. 0=all bonds/MMF, 100=all equity. Current target ~45 for a 72yo couple.",
+    "current_target": 45,
+    "equity_range": [0.30, 0.60],
+    "income_tilt_range": [0.0, 1.0],
+    "rebalance_band_pct": 5
+  },
+
+  "planning_horizon": {
+    "primary_end_year": 2045,
+    "ages_at_end": [92, 90],
+    "note": "20-year horizon to age ~92; extend if longevity risk is a concern"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "filing_status": "mfj",
+  "tax_year": 2025,
+  "state": "OR",
+  "ages": [72, 70],
+  "agi_prior_year": 104000,
+  "cap_loss_carryforward": 3000,
+  "standard_deduction_base": 30000,
+  "standard_deduction_senior_bonus_each": 1550,
+  "effective_standard_deduction": 33100,
+  "ss_combined_annual": 56000,
+
+  "federal_brackets_mfj_2025": [
+    {"lower": 0,      "upper": 23850,  "rate": 0.10},
+    {"lower": 23850,  "upper": 96950,  "rate": 0.12},
+    {"lower": 96950,  "upper": 206700, "rate": 0.22},
+    {"lower": 206700, "upper": 394600, "rate": 0.24},
+    {"lower": 394600, "upper": 501050, "rate": 0.32},
+    {"lower": 501050, "upper": 751600, "rate": 0.35},
+    {"lower": 751600, "upper": null,   "rate": 0.37}
+  ],
+
+  "qualified_div_brackets_mfj_2025": [
+    {"lower": 0,      "upper": 96700,  "rate": 0.00},
+    {"lower": 96700,  "upper": 600050, "rate": 0.15},
+    {"lower": 600050, "upper": null,   "rate": 0.20}
+  ],
+
+  "ss_taxation": {
+    "base_amount_mfj": 32000,
+    "additional_amount_mfj": 44000,
+    "max_taxable_pct": 0.85
+  },
+
+  "irmaa_thresholds_mfj_2025": [
+    {"magi_lower": 0,      "magi_upper": 206000, "part_b_surcharge": 0,     "part_d_surcharge": 0},
+    {"magi_lower": 206000, "magi_upper": 258000, "part_b_surcharge": 838.8,  "part_d_surcharge": 154.8},
+    {"magi_lower": 258000, "magi_upper": 322000, "part_b_surcharge": 2096.4, "part_d_surcharge": 399.6},
+    {"magi_lower": 322000, "magi_upper": 386000, "part_b_surcharge": 3354.0, "part_d_surcharge": 644.4},
+    {"magi_lower": 386000, "magi_upper": 750000, "part_b_surcharge": 4611.6, "part_d_surcharge": 889.2},
+    {"magi_lower": 750000, "magi_upper": null,    "part_b_surcharge": 5030.4, "part_d_surcharge": 966.0}
+  ],
+  "irmaa_note": "Surcharges are annual per-person amounts; multiply by 2 for couple. Based on MAGI from 2 years prior.",
+
+  "oregon_tax": {
+    "brackets_mfj_2025": [
+      {"lower": 0,     "upper": 10000,  "rate": 0.0475},
+      {"lower": 10000, "upper": 25000,  "rate": 0.0675},
+      {"lower": 25000, "upper": 125000, "rate": 0.0875},
+      {"lower": 125000,"upper": null,   "rate": 0.099}
+    ],
+    "standard_deduction_mfj": 5010,
+    "no_sales_tax": true,
+    "ss_fully_exempt": true,
+    "note": "Oregon has no sales tax; SS is exempt; federal pension subtraction may apply"
+  }
+}
