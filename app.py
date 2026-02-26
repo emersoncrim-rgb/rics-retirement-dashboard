@@ -43,6 +43,8 @@ from rebalance_sim import (
 from recommendations import (
     generate_all_recommendations, generate_recommendations_from_files,
 )
+from live_overlay import apply_price_overrides
+from quotes import fetch_quotes_finnhub
 
 # ── Data paths ───────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
@@ -63,6 +65,76 @@ def load_csv_rows(path):
         return list(csv.DictReader(f))
 
 
+# ── Price-mode: sidebar controls + unified holdings loader ───────────────────
+
+def _setup_price_sidebar():
+    """Render sidebar controls for price mode. Call once from main()."""
+    st.sidebar.subheader("📡 Price Mode")
+    mode = st.sidebar.radio(
+        "Holdings valuation",
+        ("Snapshot (CSV prices)", "Live (Finnhub)"),
+        index=0,
+        key="price_mode",
+    )
+    api_key = None
+    if mode.startswith("Live"):
+        api_key = st.sidebar.text_input(
+            "Finnhub API key",
+            value=os.environ.get("FINNHUB_API_KEY", ""),
+            type="password",
+            key="finnhub_key",
+        )
+        if not api_key:
+            st.sidebar.caption("Set FINNHUB_API_KEY env var or paste key above.")
+    return mode, api_key
+
+
+if HAS_STREAMLIT:
+    @st.cache_data(ttl=120, show_spinner="Fetching live quotes …")
+    def _cached_quotes(tickers_tuple, api_key):
+        """Cache live quotes for 2 minutes to avoid hammering the API."""
+        return fetch_quotes_finnhub(list(tickers_tuple), api_key=api_key)
+else:
+    def _cached_quotes(tickers_tuple, api_key):
+        return fetch_quotes_finnhub(list(tickers_tuple), api_key=api_key)
+
+
+def load_holdings_with_mode():
+    """Load holdings, optionally overlaying live prices based on sidebar state.
+
+    Returns the same list[dict] shape as load_csv_rows(SNAPSHOT_PATH) so every
+    downstream tab is unaffected.
+    """
+    holdings = load_csv_rows(SNAPSHOT_PATH)
+    mode = st.session_state.get("price_mode", "Snapshot (CSV prices)")
+    api_key = st.session_state.get("finnhub_key", "")
+
+    if not mode.startswith("Live") or not api_key:
+        return holdings
+
+    # Collect unique tickers
+    tickers = sorted({h["ticker"] for h in holdings if h.get("ticker")})
+    try:
+        raw_quotes = _cached_quotes(tuple(tickers), api_key)
+    except Exception as exc:
+        st.sidebar.error(f"Quote fetch failed: {exc}")
+        return holdings
+
+    # Build price_overrides dict  {ticker: price} for successful quotes
+    price_overrides = {}
+    for sym, data in raw_quotes.items():
+        if "price" in data:
+            price_overrides[sym] = data["price"]
+
+    if price_overrides:
+        holdings = apply_price_overrides(holdings, price_overrides)
+        st.sidebar.success(f"Live prices applied for {len(price_overrides)}/{len(tickers)} tickers")
+    else:
+        st.sidebar.warning("No live prices returned — using snapshot values")
+
+    return holdings
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB IMPLEMENTATIONS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -70,7 +142,7 @@ def load_csv_rows(path):
 def tab_portfolio_overview():
     """Tab 1: Portfolio snapshot summary."""
     st.header("Portfolio Overview")
-    holdings = load_csv_rows(SNAPSHOT_PATH)
+    holdings = load_holdings_with_mode()
 
     # Account totals
     accounts = {}
@@ -228,7 +300,7 @@ def tab_broker_import():
 def tab_dividend_analysis():
     """Tab 5: Dividend income analysis and projections."""
     st.header("Dividend Analysis")
-    holdings = load_csv_rows(SNAPSHOT_PATH)
+    holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
 
     annual_expenses = st.number_input("Annual expenses for coverage ratio",
@@ -286,7 +358,7 @@ def tab_dividend_analysis():
 def tab_rebalance_simulator():
     """Tab 6: Rebalance simulator with what-if scenarios."""
     st.header("Rebalance Simulator")
-    holdings = load_csv_rows(SNAPSHOT_PATH)
+    holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
 
     # Controls
@@ -359,7 +431,7 @@ def tab_recommendations():
     st.header("Recommendations")
     st.write("Actionable planning opportunities based on your complete financial picture.")
 
-    holdings = load_csv_rows(SNAPSHOT_PATH)
+    holdings = load_holdings_with_mode()
     tax_profile = load_json(TAX_PROFILE_PATH)
     constraints = load_json(CONSTRAINTS_PATH)
     cashflow = load_csv_rows(CASHFLOW_PATH)
@@ -441,6 +513,7 @@ def main():
         layout="wide",
     )
     st.title("📊 RICS – Retirement Income & Cash-flow Simulator")
+    _setup_price_sidebar()
 
     tabs = st.tabs([
         "Portfolio Overview",
