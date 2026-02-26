@@ -1,94 +1,107 @@
 #!/usr/bin/env bash
-#
-# run_all_tests.sh — Run every RICS test module and print a summary.
+# run_all_tests.sh – RICS Test Runner
+# Runs all unit tests and reports results.
 #
 # Usage:
-#   bash run_all_tests.sh           # from the rics/ directory
-#   bash run_all_tests.sh --verbose # show individual test names
-#
+#   ./run_all_tests.sh          # Run all tests
+#   ./run_all_tests.sh -v       # Verbose output
+#   ./run_all_tests.sh -q       # Quiet (summary only)
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERBOSE=""
-[[ "${1:-}" == "--verbose" || "${1:-}" == "-v" ]] && VERBOSE="1"
+VERBOSE="${1:--v}"
+PASS=0
+FAIL=0
+ERRORS=0
+TOTAL=0
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
+echo "═══════════════════════════════════════════════════════════"
+echo "  RICS Test Suite"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
 
-MODULES=(
-    tests/test_ingest.py
-    tests/test_risk.py
-    tests/test_deterministic.py
-    tests/test_tax_irmaa.py
-    tests/test_rmd.py
-    tests/test_withdrawals.py
-    tests/test_mc_sim.py
-    tests/test_trip_simulator.py
+# Collect all test files
+TEST_FILES=(
+    tests/test_broker_import.py
+    tests/test_dividend_analyzer.py
+    tests/test_rebalance_sim.py
+    tests/test_recommendations.py
 )
 
-TOTAL_PASS=0
-TOTAL_FAIL=0
-FAILED_MODULES=()
+# Check for pytest availability; fall back to unittest
+if python3 -c "import pytest" 2>/dev/null; then
+    RUNNER="pytest"
+    echo "Runner: pytest"
+    echo ""
+    python3 -m pytest tests/ $VERBOSE --tb=short 2>&1
+    exit $?
+else
+    RUNNER="unittest"
+    echo "Runner: unittest (pytest not available)"
+    echo ""
+fi
 
-echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  RICS Test Suite"
-echo "════════════════════════════════════════════════════════════"
-echo ""
+ALL_PASSED=true
 
-for mod in "${MODULES[@]}"; do
-    mod_name=$(basename "$mod" .py)
-
-    if [[ -n "$VERBOSE" ]]; then
-        output=$(python3 "$mod" 2>&1) || true
-    else
-        output=$(python3 "$mod" 2>&1) || true
+for test_file in "${TEST_FILES[@]}"; do
+    if [ ! -f "$test_file" ]; then
+        echo "⚠️  MISSING: $test_file"
+        ERRORS=$((ERRORS + 1))
+        ALL_PASSED=false
+        continue
     fi
 
-    # Extract "Ran N tests" and OK/FAILED
-    ran_line=$(echo "$output" | grep -E "^Ran [0-9]+" || echo "Ran 0 tests")
-    count=$(echo "$ran_line" | grep -oE '[0-9]+' | head -1)
-    count=${count:-0}
+    echo "───────────────────────────────────────────────────────"
+    echo "  Running: $test_file"
+    echo "───────────────────────────────────────────────────────"
 
-    if echo "$output" | grep -q "^OK"; then
-        printf "  ${GREEN}✅  %-30s %3s passed${NC}\n" "$mod_name" "$count"
-        TOTAL_PASS=$((TOTAL_PASS + count))
-    else
-        fail_count=$(echo "$output" | grep -oP 'failures=\K[0-9]+' || echo "0")
-        fail_count=${fail_count:-0}
-        err_count=$(echo "$output" | grep -oP 'errors=\K[0-9]+' || echo "0")
-        err_count=${err_count:-0}
-        total_bad=$((fail_count + err_count))
-        printf "  ${RED}❌  %-30s %3s ran, %s failed${NC}\n" "$mod_name" "$count" "$total_bad"
-        TOTAL_PASS=$((TOTAL_PASS + count - total_bad))
-        TOTAL_FAIL=$((TOTAL_FAIL + total_bad))
-        FAILED_MODULES+=("$mod_name")
+    OUTPUT=$(python3 -m unittest "$test_file" $VERBOSE 2>&1) || true
+    echo "$OUTPUT"
+
+    # Parse results from last line like "Ran 48 tests in 0.006s"
+    RAN=$(echo "$OUTPUT" | grep -oP "Ran \K\d+" | tail -1)
+    if [ -n "$RAN" ]; then
+        TOTAL=$((TOTAL + RAN))
     fi
 
-    if [[ -n "$VERBOSE" ]]; then
-        echo "$output" | grep -E "^test_|\.\.\.\ " | sed 's/^/      /'
-        echo ""
+    if echo "$OUTPUT" | grep -q "^OK$"; then
+        PASS=$((PASS + ${RAN:-0}))
+    elif echo "$OUTPUT" | grep -q "FAILED"; then
+        FAILURES=$(echo "$OUTPUT" | grep -oP "failures=\K\d+" || echo "0")
+        ERR=$(echo "$OUTPUT" | grep -oP "errors=\K\d+" || echo "0")
+        FAIL=$((FAIL + ${FAILURES:-0}))
+        ERRORS=$((ERRORS + ${ERR:-0}))
+        ALL_PASSED=false
     fi
+    echo ""
 done
 
-echo ""
-echo "════════════════════════════════════════════════════════════"
-printf "  Total: ${GREEN}%d passed${NC}" "$TOTAL_PASS"
-if [[ $TOTAL_FAIL -gt 0 ]]; then
-    printf ", ${RED}%d failed${NC}" "$TOTAL_FAIL"
+# Also run app.py self-test
+echo "───────────────────────────────────────────────────────"
+echo "  Running: app.py self-test"
+echo "───────────────────────────────────────────────────────"
+if python3 app.py 2>&1 | grep -q "findings:"; then
+    echo "✅ app.py self-test passed"
+else
+    echo "❌ app.py self-test failed"
+    ALL_PASSED=false
 fi
+
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "  SUMMARY"
+echo "═══════════════════════════════════════════════════════════"
+echo "  Total tests:  $TOTAL"
+echo "  Passed:       $PASS"
+echo "  Failed:       $FAIL"
+echo "  Errors:       $ERRORS"
 echo ""
 
-if [[ $TOTAL_FAIL -gt 0 ]]; then
-    echo ""
-    printf "  ${RED}Failed modules: ${FAILED_MODULES[*]}${NC}\n"
-    echo ""
-    exit 1
-else
-    echo "  All tests passed ✓"
-    echo "════════════════════════════════════════════════════════════"
-    echo ""
+if $ALL_PASSED; then
+    echo "  ✅ ALL TESTS PASSED"
     exit 0
+else
+    echo "  ❌ SOME TESTS FAILED"
+    exit 1
 fi

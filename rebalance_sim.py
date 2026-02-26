@@ -1,0 +1,267 @@
+"""
+rebalance_sim.py – RICS Module: Rebalance Simulator
+
+Simulates portfolio rebalancing scenarios considering:
+- Target asset allocation (aggressiveness score → equity/bond/cash split)
+- Tax impact of trades in taxable accounts
+- Concentration limits (e.g., AAPL position)
+- Account-level constraints (IRA rebalances are tax-free)
+- Rebalance band tolerance to reduce unnecessary trading
+"""
+
+import csv
+import json
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+
+@dataclass
+class AllocationTarget:
+    """Target allocation percentages."""
+    us_equity: float = 0.30
+    intl_equity: float = 0.10
+    us_bond: float = 0.35
+    mmf: float = 0.25
+
+    def validate(self) -> bool:
+        total = self.us_equity + self.intl_equity + self.us_bond + self.mmf
+        return abs(total - 1.0) < 0.001
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class TradeProposal:
+    """A proposed rebalancing trade."""
+    account_id: str
+    account_type: str
+    ticker: str
+    asset_class: str
+    action: str  # "buy" or "sell"
+    shares: float
+    estimated_price: float
+    trade_value: float
+    estimated_tax: float  # 0 for IRA/Roth trades
+    embedded_gain: float
+    rationale: str
+    blocked: bool = False
+    block_reason: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class RebalanceResult:
+    """Complete rebalance simulation output."""
+    current_allocation: dict
+    target_allocation: dict
+    drift: dict  # asset_class → drift pct
+    total_portfolio_value: float
+    trades: list[TradeProposal]
+    total_tax_cost: float
+    tax_free_trades_value: float
+    taxable_trades_value: float
+    net_turnover_pct: float
+    blocked_trades: list[TradeProposal]
+    summary: str
+
+
+def score_to_allocation(aggressiveness: int) -> AllocationTarget:
+    """
+    Convert 0-100 aggressiveness score to target allocation.
+
+    0   → 0% equity, 50% bonds, 50% MMF
+    45  → 36% us_eq, 9% intl_eq, 35% bonds, 20% MMF
+    100 → 75% us_eq, 20% intl_eq, 5% bonds, 0% MMF
+    """
+    score = max(0, min(100, aggressiveness))
+
+    equity_pct = score / 100 * 0.95  # max 95% equity at score=100
+    us_eq = round(equity_pct * 0.80, 4)  # 80/20 US/intl split
+    intl_eq = round(equity_pct * 0.20, 4)
+
+    remaining = 1.0 - us_eq - intl_eq
+    # More aggressive → less cash
+    cash_pct = max(0.0, round(remaining * (1 - score / 200), 4))
+    bond_pct = round(remaining - cash_pct, 4)
+
+    return AllocationTarget(
+        us_equity=us_eq,
+        intl_equity=intl_eq,
+        us_bond=bond_pct,
+        mmf=cash_pct,
+    )
+
+
+def compute_current_allocation(holdings: list[dict]) -> dict:
+    """Compute current allocation percentages by asset class."""
+    totals = {"us_equity": 0, "intl_equity": 0, "us_bond": 0, "mmf": 0}
+    for h in holdings:
+        ac = h.get("asset_class", "us_equity")
+        mv = float(h.get("market_value", 0))
+        if ac in totals:
+            totals[ac] += mv
+        else:
+            totals["us_equity"] += mv  # Unknown → equity
+
+    grand = sum(totals.values())
+    if grand == 0:
+        return {k: 0.0 for k in totals}
+    return {k: round(v / grand, 4) for k, v in totals.items()}
+
+
+def compute_drift(current: dict, target: dict) -> dict:
+    """Compute allocation drift (current - target) by asset class."""
+    all_keys = set(list(current.keys()) + list(target.keys()))
+    return {k: round(current.get(k, 0) - target.get(k, 0), 4) for k in all_keys}
+
+
+def simulate_rebalance(
+    holdings: list[dict],
+    target: AllocationTarget,
+    constraints: Optional[dict] = None,
+    rebalance_band: float = 0.05,
+    tax_rates: Optional[dict] = None,
+) -> RebalanceResult:
+    """
+    Simulate rebalancing and generate trade proposals.
+
+    Parameters
+    ----------
+    holdings : list[dict]
+        Portfolio holdings from accounts_snapshot
+    target : AllocationTarget
+        Target allocation percentages
+    constraints : dict, optional
+        Concentration limits and other constraints
+    rebalance_band : float
+        Tolerance band — don't trade if drift < band
+    tax_rates : dict, optional
+        Tax rates for gain estimation: {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
+    """
+    constr = constraints or {}
+    rates = tax_rates or {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
+    aapl_flag = constr.get("concentration_limits", {}).get("aapl_flag", {})
+
+    target_dict = target.to_dict()
+    current = compute_current_allocation(holdings)
+    drift = compute_drift(current, target_dict)
+    total_value = sum(float(h.get("market_value", 0)) for h in holdings)
+
+    trades = []
+    blocked = []
+
+    # Aggregate by (account_type, asset_class) for smarter trading
+    acct_class_holdings = {}
+    for h in holdings:
+        key = (h.get("account_type", ""), h.get("asset_class", ""))
+        if key not in acct_class_holdings:
+            acct_class_holdings[key] = []
+        acct_class_holdings[key].append(h)
+
+    for asset_class, drift_pct in drift.items():
+        if abs(drift_pct) < rebalance_band:
+            continue  # Within tolerance
+
+        trade_amount = abs(drift_pct * total_value)
+        action = "sell" if drift_pct > 0 else "buy"
+
+        # Prefer to trade in tax-advantaged accounts first
+        acct_priority = ["roth_ira", "trad_ira", "inherited_ira", "taxable"]
+
+        remaining = trade_amount
+        for acct_type in acct_priority:
+            if remaining <= 0:
+                break
+
+            key = (acct_type, asset_class)
+            acct_holdings = acct_class_holdings.get(key, [])
+
+            for h in acct_holdings:
+                if remaining <= 0:
+                    break
+
+                mv = float(h.get("market_value", 0))
+                price = float(h.get("price", 1))
+                ticker = h.get("ticker", "")
+                unrealized = float(h.get("unrealized_gain", 0))
+
+                if action == "sell":
+                    sell_amount = min(remaining, mv * 0.9)  # Don't liquidate fully
+                else:
+                    # For buys, use cash from same account or cross-fund
+                    sell_amount = min(remaining, trade_amount)
+
+                shares_to_trade = round(sell_amount / price, 2) if price > 0 else 0
+
+                # Tax estimate
+                tax_est = 0.0
+                if acct_type == "taxable" and action == "sell" and unrealized > 0:
+                    gain_realized = unrealized * (sell_amount / mv) if mv > 0 else 0
+                    tax_est = round(gain_realized * (rates["ltcg"] + rates["state"]), 2)
+
+                # Check concentration constraints
+                is_blocked = False
+                block_reason = ""
+
+                if ticker.upper() == aapl_flag.get("ticker", "").upper() and action == "sell":
+                    if aapl_flag.get("strategy") == "do_not_sell_unless_offset_by_losses":
+                        is_blocked = True
+                        block_reason = "AAPL: high embedded gain, sell only to offset losses"
+
+                proposal = TradeProposal(
+                    account_id=h.get("account_id", ""),
+                    account_type=acct_type,
+                    ticker=ticker,
+                    asset_class=asset_class,
+                    action=action,
+                    shares=shares_to_trade,
+                    estimated_price=price,
+                    trade_value=round(sell_amount, 2),
+                    estimated_tax=tax_est,
+                    embedded_gain=unrealized,
+                    rationale=f"Rebalance {asset_class}: {drift_pct:+.1%} drift",
+                    blocked=is_blocked,
+                    block_reason=block_reason,
+                )
+
+                if is_blocked:
+                    blocked.append(proposal)
+                else:
+                    trades.append(proposal)
+
+                remaining -= sell_amount
+
+    total_tax = sum(t.estimated_tax for t in trades)
+    tax_free_val = sum(t.trade_value for t in trades if t.account_type != "taxable")
+    taxable_val = sum(t.trade_value for t in trades if t.account_type == "taxable")
+    turnover = round((tax_free_val + taxable_val) / total_value, 4) if total_value > 0 else 0
+
+    summary_parts = [
+        f"Portfolio: ${total_value:,.0f}",
+        f"Trades proposed: {len(trades)} (+ {len(blocked)} blocked)",
+        f"Estimated tax cost: ${total_tax:,.0f}",
+        f"Turnover: {turnover:.1%}",
+    ]
+
+    return RebalanceResult(
+        current_allocation=current,
+        target_allocation=target_dict,
+        drift=drift,
+        total_portfolio_value=total_value,
+        trades=trades,
+        total_tax_cost=total_tax,
+        tax_free_trades_value=tax_free_val,
+        taxable_trades_value=taxable_val,
+        net_turnover_pct=turnover,
+        blocked_trades=blocked,
+        summary=" | ".join(summary_parts),
+    )
+
+
+def load_holdings_from_csv(csv_path: str) -> list[dict]:
+    """Load holdings from accounts_snapshot CSV."""
+    with open(csv_path) as f:
+        return list(csv.DictReader(f))
