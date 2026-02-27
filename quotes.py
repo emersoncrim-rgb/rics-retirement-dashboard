@@ -67,11 +67,21 @@ def fetch_quotes_finnhub(symbols, api_key=None, timeout=10):
     """
     if api_key is None:
         api_key = os.environ.get("FINNHUB_API_KEY")
-    if not api_key:
-        raise ValueError("Finnhub API key not provided. Set FINNHUB_API_KEY or pass api_key argument.")
 
+    if not api_key:
+        try:
+            from settings_store import get_setting
+            api_key = get_setting("finnhub_api_key")
+        except Exception:
+            pass
+
+    if not api_key:
+        raise ValueError(
+            "Finnhub API key not provided. Set FINNHUB_API_KEY or pass api_key argument."
+        )
 
     results = {}
+
     # normalize and dedupe input
     unique = sorted({str(s).strip() for s in symbols if s and str(s).strip()})
 
@@ -82,17 +92,12 @@ def fetch_quotes_finnhub(symbols, api_key=None, timeout=10):
             else:
                 data = _fetch_with_urllib(sym, api_key, timeout=timeout)
         except Exception as exc:
-            # Logically skip this symbol on failure (caller can inspect missing tickers)
-            # Avoid raising to keep UI resilient; return only successful symbols.
-            # You can change this to `raise` if you prefer strict behavior.
-            # For debugging, attach the error to the results entry.
             results[sym] = {"error": str(exc)}
             continue
 
         # Finnhub 'c' field is the current price; 't' is epoch timestamp
         price = data.get("c")
         if price is None or price == 0:
-            # No usable price; surface whatever response for debugging
             results[sym] = {"raw": data}
             continue
 

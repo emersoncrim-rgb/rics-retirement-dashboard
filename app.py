@@ -45,6 +45,7 @@ from recommendations import (
 )
 from live_overlay import apply_price_overrides
 from quotes import fetch_quotes_finnhub
+import settings_store
 
 # ── Data paths ───────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
@@ -70,24 +71,30 @@ def load_csv_rows(path):
 def _setup_price_sidebar():
     """Render sidebar controls for price mode. Call once from main()."""
     st.sidebar.subheader("📡 Price Mode")
+
+    default_disk = settings_store.get_setting("price_mode", "disk") == "disk"
+    default_index = 0 if default_disk else 1
+
     mode = st.sidebar.radio(
         "Holdings valuation",
         ("Snapshot (CSV prices)", "Live (Finnhub)"),
-        index=0,
+        index=default_index,
         key="price_mode",
     )
+
     api_key = None
     if mode.startswith("Live"):
+        stored_key = settings_store.get_setting("finnhub_api_key", "")
         api_key = st.sidebar.text_input(
             "Finnhub API key",
-            value=os.environ.get("FINNHUB_API_KEY", ""),
+            value=os.environ.get("FINNHUB_API_KEY", stored_key),
             type="password",
             key="finnhub_key",
         )
         if not api_key:
             st.sidebar.caption("Set FINNHUB_API_KEY env var or paste key above.")
-    return mode, api_key
 
+    return mode, api_key
 
 if HAS_STREAMLIT:
     @st.cache_data(ttl=120, show_spinner="Fetching live quotes …")
@@ -106,7 +113,14 @@ def load_holdings_with_mode():
     downstream tab is unaffected.
     """
     holdings = load_csv_rows(SNAPSHOT_PATH)
-    mode = st.session_state.get("price_mode", "Snapshot (CSV prices)")
+
+    default_mode = (
+        "Snapshot (CSV prices)"
+        if settings_store.get_setting("price_mode", "disk") == "disk"
+        else "Live (Finnhub)"
+    )
+
+    mode = st.session_state.get("price_mode", default_mode)
     api_key = st.session_state.get("finnhub_key", "")
 
     if not mode.startswith("Live") or not api_key:
@@ -114,26 +128,15 @@ def load_holdings_with_mode():
 
     # Collect unique tickers
     tickers = sorted({h["ticker"] for h in holdings if h.get("ticker")})
+
     try:
         raw_quotes = _cached_quotes(tuple(tickers), api_key)
     except Exception as exc:
         st.sidebar.error(f"Quote fetch failed: {exc}")
         return holdings
 
-    # Build price_overrides dict  {ticker: price} for successful quotes
-    price_overrides = {}
-    for sym, data in raw_quotes.items():
-        if "price" in data:
-            price_overrides[sym] = data["price"]
-
-    if price_overrides:
-        holdings = apply_price_overrides(holdings, price_overrides)
-        st.sidebar.success(f"Live prices applied for {len(price_overrides)}/{len(tickers)} tickers")
-    else:
-        st.sidebar.warning("No live prices returned — using snapshot values")
-
-    return holdings
-
+    # Overlay live prices
+    return apply_price_overrides(holdings, raw_quotes)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB IMPLEMENTATIONS
