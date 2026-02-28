@@ -44,6 +44,7 @@ from recommendations import (
     generate_all_recommendations, generate_recommendations_from_files,
 )
 from profile_store import load_profile, save_profile
+from holdings_store import load_holdings, validate_holdings, save_holdings
 from live_overlay import apply_price_overrides
 from quotes import fetch_quotes_finnhub
 import settings_store
@@ -98,6 +99,93 @@ def _setup_price_sidebar():
             st.session_state["finnhub_key"] = new_key
             st.session_state["price_mode"] = new_mode
             st.rerun()
+def _setup_holdings_editor():
+    """Render sidebar controls for editing holdings."""
+    with st.sidebar.expander("📁 Holdings", expanded=False):
+        st.markdown("Edit your portfolio snapshot below.")
+        try:
+            rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+        except Exception as e:
+            st.error(f"Failed to load holdings: {e}")
+            return
+
+        edited_rows = st.data_editor(
+            rows,
+            num_rows="dynamic",
+            key="holdings_editor",
+            use_container_width=True,
+        )
+
+        if st.button("Save Holdings"):
+            errors = validate_holdings(edited_rows)
+            if errors:
+                for err in errors:
+                    st.error(f"• {err}")
+            else:
+                ok, save_errors = save_holdings(SNAPSHOT_PATH, edited_rows, fieldnames)
+                if ok:
+                    st.success("Saved successfully!")
+                    st.rerun()
+                else:
+                    for err in save_errors:
+                        st.error(f"• {err}")
+def _setup_profile_editor():
+    """Render sidebar controls for editing user profile."""
+    profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+    
+    with st.sidebar.expander("👤 Profile", expanded=False):
+        st.markdown("Update your key financial details here.")
+        patch = {}
+        
+        if "filing_status" in profile:
+            valid_statuses = ["single", "mfj", "mfs", "hoh", "qw"]
+            current_fs = profile["filing_status"] if profile["filing_status"] in valid_statuses else "single"
+            fs = st.selectbox("Filing status", valid_statuses, index=valid_statuses.index(current_fs))
+            if fs != profile["filing_status"]:
+                patch["filing_status"] = fs
+                
+        if "ages" in profile and isinstance(profile["ages"], list) and len(profile["ages"]) >= 2:
+            col1, col2 = st.columns(2)
+            age1 = col1.number_input("Age (Person 1)", value=int(profile["ages"][0]), step=1)
+            age2 = col2.number_input("Age (Person 2)", value=int(profile["ages"][1]), step=1)
+            if age1 != profile["ages"][0] or age2 != profile["ages"][1]:
+                patch["ages"] = [age1, age2]
+                
+        if "ss_combined_annual" in profile:
+            ss = st.number_input("Annual Social Security", value=float(profile["ss_combined_annual"]), step=1000.0)
+            if ss != profile["ss_combined_annual"]:
+                patch["ss_combined_annual"] = ss
+                
+        if "agi_prior_year" in profile:
+            agi = st.number_input("Prior-year AGI", value=float(profile["agi_prior_year"]), step=1000.0)
+            if agi != profile["agi_prior_year"]:
+                patch["agi_prior_year"] = agi
+                
+        if "rmd_start_age" in profile:
+            rmd = st.number_input("RMD Start Age", value=int(profile["rmd_start_age"]), step=1)
+            if rmd != profile["rmd_start_age"]:
+                patch["rmd_start_age"] = rmd
+                
+        if "aggressiveness_score" in profile and isinstance(profile["aggressiveness_score"], dict) and "current_target" in profile["aggressiveness_score"]:
+            curr_agg = profile["aggressiveness_score"]["current_target"]
+            agg = st.slider("Risk Target (0=Conservative, 100=Aggressive)", 0, 100, int(curr_agg))
+            if agg != curr_agg:
+                new_agg = profile["aggressiveness_score"].copy()
+                new_agg["current_target"] = agg
+                patch["aggressiveness_score"] = new_agg
+                
+        st.markdown("")
+        if st.button("Save Profile"):
+            if patch:
+                merged, errors = save_profile(patch, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                if errors:
+                    for err in errors:
+                        st.error(f"• {err}")
+                else:
+                    st.success("Profile saved successfully!")
+                    st.rerun()
+            else:
+                st.info("No changes to save.")
 
 if HAS_STREAMLIT:
     @st.cache_data(ttl=120, show_spinner="Fetching live quotes …")
@@ -562,6 +650,7 @@ def main():
 
     st.title("📊 RICS – Retirement Income & Cash-flow Simulator")
     _setup_price_sidebar()
+    _setup_holdings_editor()
     _setup_profile_editor()
 
     tabs = st.tabs([
