@@ -136,7 +136,17 @@ def load_holdings_with_mode():
         return holdings
 
     # Overlay live prices
-    return apply_price_overrides(holdings, raw_quotes)
+        # Convert Finnhub quote objects -> simple ticker->price mapping expected by live_overlay
+    price_overrides = {}
+    for tkr, payload in (raw_quotes or {}).items():
+        if isinstance(payload, dict):
+            if "price" in payload and payload["price"] is not None:
+                price_overrides[tkr] = payload["price"]
+        else:
+            # Backward-compatible: allow numeric mapping too
+            price_overrides[tkr] = payload
+
+    return apply_price_overrides(holdings, price_overrides)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB IMPLEMENTATIONS
