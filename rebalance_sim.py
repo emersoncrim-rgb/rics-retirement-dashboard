@@ -118,12 +118,55 @@ def compute_drift(current: dict, target: dict) -> dict:
     return {k: round(current.get(k, 0) - target.get(k, 0), 4) for k in all_keys}
 
 
+
+def _apply_sector_tilt_to_target(target: AllocationTarget, holdings: list[dict], sector_prefs: Optional[dict]) -> AllocationTarget:
+    if not sector_prefs or not sector_prefs.get("tilt_strength"):
+        return AllocationTarget(**target.to_dict())
+
+    tilt = sector_prefs.get("tilt_strength", 0)
+    liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
+    avoided = {str(x).strip().lower() for x in sector_prefs.get("avoided_sectors", []) if str(x).strip()}
+
+    ac_mv = {}
+    ac_net_score = {}
+    for h in holdings:
+        ac = h.get("asset_class", "us_equity")
+        try:
+            mv = float(h.get("market_value", 0) or 0)
+        except Exception:
+            mv = 0.0
+        sector = str(h.get("sector", "")).strip().lower()
+
+        ac_mv[ac] = ac_mv.get(ac, 0.0) + mv
+        if sector in liked:
+            ac_net_score[ac] = ac_net_score.get(ac, 0.0) + mv
+        elif sector in avoided:
+            ac_net_score[ac] = ac_net_score.get(ac, 0.0) - mv
+
+    target_dict = target.to_dict()
+    new_weights = {}
+    for ac, weight in target_dict.items():
+        total_mv = ac_mv.get(ac, 0.0)
+        net_exposure = ac_net_score.get(ac, 0.0) / total_mv if total_mv > 0 else 0.0
+        sign = 1 if net_exposure > 0 else (-1 if net_exposure < 0 else 0)
+        delta = (tilt / 5.0) * 0.02 * sign
+        new_weights[ac] = max(0.0, weight + delta)
+
+    total_weight = sum(new_weights.values())
+    if total_weight > 0:
+        new_weights = {k: v / total_weight for k, v in new_weights.items()}
+    else:
+        new_weights = target_dict
+
+    return AllocationTarget(**new_weights)
+
 def simulate_rebalance(
     holdings: list[dict],
     target: AllocationTarget,
     constraints: Optional[dict] = None,
     rebalance_band: float = 0.05,
     tax_rates: Optional[dict] = None,
+    sector_prefs: Optional[dict] = None,
 ) -> RebalanceResult:
     """
     Simulate rebalancing and generate trade proposals.
@@ -140,10 +183,13 @@ def simulate_rebalance(
         Tolerance band — don't trade if drift < band
     tax_rates : dict, optional
         Tax rates for gain estimation: {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
+    sector_prefs : dict, optional
+        Sector preferences mapping e.g. {"liked_sectors": [...], "avoided_sectors": [...], "tilt_strength": 3}
     """
     constr = constraints or {}
     rates = tax_rates or {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
     aapl_flag = constr.get("concentration_limits", {}).get("aapl_flag", {})
+    target = _apply_sector_tilt_to_target(target, holdings, sector_prefs)
 
     target_dict = target.to_dict()
     current = compute_current_allocation(holdings)
@@ -178,6 +224,17 @@ def simulate_rebalance(
 
             key = (acct_type, asset_class)
             acct_holdings = acct_class_holdings.get(key, [])
+            if sector_prefs and sector_prefs.get("tilt_strength", 0) > 0:
+                tilt = sector_prefs.get("tilt_strength", 0)
+                liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
+                avoided = {str(x).strip().lower() for x in sector_prefs.get("avoided_sectors", []) if str(x).strip()}
+
+                def sort_key(h):
+                    sector = str(h.get("sector", "")).strip().lower()
+                    s = tilt if sector in liked else (-tilt if sector in avoided else 0)
+                    return s if action == "sell" else -s
+
+                acct_holdings = sorted(acct_holdings, key=sort_key)
 
             for h in acct_holdings:
                 if remaining <= 0:

@@ -232,6 +232,43 @@ class TestSimulateRebalance(unittest.TestCase):
         result = simulate_rebalance(SAMPLE_HOLDINGS, target)
         self.assertGreaterEqual(result.total_tax_cost, 0)
 
+class TestSectorPreferencesRebalance(unittest.TestCase):
+    def setUp(self):
+        self.holdings = [
+            {"account_id": "TAX1", "account_type": "taxable", "ticker": "A", "asset_class": "us_equity", "sector": "Energy", "market_value": "100000", "price": "100", "unrealized_gain": "0"},
+            {"account_id": "TAX1", "account_type": "taxable", "ticker": "B", "asset_class": "us_equity", "sector": "Technology", "market_value": "100000", "price": "100", "unrealized_gain": "0"},
+            {"account_id": "TAX1", "account_type": "taxable", "ticker": "C", "asset_class": "us_equity", "sector": "Cyclical", "market_value": "100000", "price": "100", "unrealized_gain": "0"},
+            {"account_id": "TAX1", "account_type": "taxable", "ticker": "CASH", "asset_class": "mmf", "market_value": "10000", "price": "1", "unrealized_gain": "0"},
+        ]
+        self.target = AllocationTarget(us_equity=0.50, intl_equity=0.0, us_bond=0.0, mmf=0.50)
+
+    def test_tilt_zero_baseline(self):
+        res_base = simulate_rebalance(self.holdings, self.target)
+        res_zero = simulate_rebalance(self.holdings, self.target, sector_prefs={"tilt_strength": 0})
+        self.assertEqual([t.ticker for t in res_base.trades], [t.ticker for t in res_zero.trades])
+
+    def test_avoided_sector_sold_first(self):
+        prefs = {"tilt_strength": 3, "avoided_sectors": ["Technology"], "liked_sectors": []}
+        res = simulate_rebalance(self.holdings, self.target, sector_prefs=prefs)
+        self.assertEqual(res.trades[0].ticker, "B")
+
+    def test_liked_sector_sold_last(self):
+        prefs = {"tilt_strength": 3, "avoided_sectors": [], "liked_sectors": ["Energy"]}
+        res = simulate_rebalance(self.holdings, self.target, sector_prefs=prefs)
+        tickers_sold = [t.ticker for t in res.trades]
+        self.assertIn("A", tickers_sold[-1:])
+
+    def test_buy_liked_first(self):
+        target_buy = AllocationTarget(us_equity=0.99, intl_equity=0.0, us_bond=0.0, mmf=0.01)
+        prefs = {"tilt_strength": 3, "avoided_sectors": [], "liked_sectors": ["Technology"]}
+        res = simulate_rebalance(self.holdings, target_buy, sector_prefs=prefs)
+        self.assertEqual(res.trades[0].ticker, "B")
+
+    def test_neutral_unchanged(self):
+        prefs = {"tilt_strength": 3, "avoided_sectors": ["Real Estate"], "liked_sectors": ["Utilities"]}
+        res = simulate_rebalance(self.holdings, self.target, sector_prefs=prefs)
+        res_base = simulate_rebalance(self.holdings, self.target)
+        self.assertEqual([t.ticker for t in res.trades], [t.ticker for t in res_base.trades])
 
 class TestLoadCSV(unittest.TestCase):
     def test_load_sample(self):
