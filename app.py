@@ -50,6 +50,7 @@ from quotes import fetch_quotes_finnhub
 from trades_store import load_trades, validate_trade, append_trade
 from trade_apply import apply_trades_to_snapshot
 from trades_apply_state import compute_new_trades
+from sector_prefs_store import load_sector_preferences, save_sector_preferences
 import settings_store
 
 # ── Data paths ───────────────────────────────────────────────────────────────
@@ -274,6 +275,33 @@ def _setup_profile_editor():
                     st.rerun()
             else:
                 st.info("No changes to save.")
+def _setup_sector_prefs_sidebar():
+    """Render sidebar controls for editing sector preferences."""
+    profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+    prefs = load_sector_preferences(profile)
+
+    with st.sidebar.expander("🏷️ Sector Preferences", expanded=False):
+        st.markdown("Set your sector tilts.")
+        liked_str = ", ".join(prefs["liked_sectors"])
+        avoided_str = ", ".join(prefs["avoided_sectors"])
+
+        with st.form("sector_prefs_form"):
+            new_liked = st.text_input("Liked Sectors (comma-separated)", value=liked_str)
+            new_avoided = st.text_input("Avoided Sectors (comma-separated)", value=avoided_str)
+            new_tilt = st.slider("Tilt Strength", 0, 5, int(prefs["tilt_strength"]))
+
+            if st.form_submit_button("Save Preferences"):
+                new_prefs = {
+                    "liked_sectors": [x.strip() for x in new_liked.split(",") if x.strip()],
+                    "avoided_sectors": [x.strip() for x in new_avoided.split(",") if x.strip()],
+                    "tilt_strength": new_tilt,
+                }
+                try:
+                    save_sector_preferences(new_prefs, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                    st.success("Sector preferences saved!")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
 
 if HAS_STREAMLIT:
     @st.cache_data(ttl=120, show_spinner="Fetching live quotes …")
@@ -740,6 +768,7 @@ def main():
     _setup_price_sidebar()
     _setup_holdings_editor()
     _setup_profile_editor()
+    _setup_sector_prefs_sidebar()
     _setup_trades_sidebar()
 
     tabs = st.tabs([
