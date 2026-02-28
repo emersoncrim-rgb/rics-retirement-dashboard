@@ -72,6 +72,22 @@ def load_csv_rows(path):
         return list(csv.DictReader(f))
 
 
+def _get_sector_prefs():
+    """Load merged profile and return sector preferences dict.
+    Returns a dict shaped: {"liked_sectors": [...], "avoided_sectors": [...], "tilt_strength": int}
+    If no profile/prefs exist, returns defaults from sector_prefs_store.
+    """
+    try:
+        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+    except Exception:
+        # If profile can't be loaded, return sensible defaults
+        return {"liked_sectors": [], "avoided_sectors": [], "tilt_strength": 0}
+    try:
+        return load_sector_preferences(profile)
+    except Exception:
+        return {"liked_sectors": [], "avoided_sectors": [], "tilt_strength": 0}
+
+
 # ── Price-mode: sidebar controls + unified holdings loader ───────────────────
 
 def _setup_price_sidebar():
@@ -600,8 +616,13 @@ def tab_rebalance_simulator():
     band = st.slider("Rebalance band tolerance", 0.01, 0.20, 0.05, 0.01)
 
     if st.button("Run Simulation") or True:  # Auto-run
-        result = simulate_rebalance(holdings, target, constraints=constraints,
-                                     rebalance_band=band)
+        result = simulate_rebalance(
+            holdings,
+            target,
+            constraints=constraints,
+            rebalance_band=band,
+            sector_prefs=_get_sector_prefs(),
+        )
 
         # Summary
         st.subheader("Results")
@@ -658,7 +679,12 @@ def tab_recommendations():
     rmd_divisors = load_json(RMD_DIVISORS_PATH)
 
     recs = generate_all_recommendations(
-        holdings, tax_profile, constraints, cashflow, rmd_divisors
+        holdings,
+        tax_profile,
+        constraints,
+        cashflow,
+        rmd_divisors,
+        sector_prefs=_get_sector_prefs(),
     )
 
     if not recs:
