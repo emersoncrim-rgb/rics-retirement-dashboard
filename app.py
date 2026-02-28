@@ -95,23 +95,6 @@ def _show_sector_prefs_summary(prefs=None):
         st.caption("No preferences set.")
 
 
-def _get_sector_prefs():
-    """Load merged profile and return sector preferences dict.
-    Returns a dict shaped: {"liked_sectors": [...], "avoided_sectors": [...], "tilt_strength": int}
-    If no profile/prefs exist, returns defaults from sector_prefs_store.
-    """
-    try:
-        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
-    except Exception:
-        # If profile can't be loaded, return sensible defaults
-        return {"liked_sectors": [], "avoided_sectors": [], "tilt_strength": 0}
-    try:
-        return load_sector_preferences(profile)
-    except Exception:
-        return {"liked_sectors": [], "avoided_sectors": [], "tilt_strength": 0}
-
-
-# ── Price-mode: sidebar controls + unified holdings loader ───────────────────
 
 def _setup_price_sidebar():
     """Render sidebar controls for price mode and settings. Call once from main()."""
