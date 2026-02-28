@@ -47,6 +47,9 @@ from profile_store import load_profile, save_profile
 from holdings_store import load_holdings, validate_holdings, save_holdings
 from live_overlay import apply_price_overrides
 from quotes import fetch_quotes_finnhub
+from trades_store import load_trades, validate_trade, append_trade
+from trade_apply import apply_trades_to_snapshot
+from trades_apply_state import compute_new_trades
 import settings_store
 
 # ── Data paths ───────────────────────────────────────────────────────────────
@@ -129,6 +132,91 @@ def _setup_holdings_editor():
                 else:
                     for err in save_errors:
                         st.error(f"• {err}")
+def _setup_trades_sidebar():
+    """Render sidebar controls for logging trades."""
+    with st.sidebar.expander("🧾 Trades", expanded=False):
+        applied_count = settings_store.get_setting("trades_applied_count", 0)
+        try:
+            trade_rows, _ = load_trades(TRADE_LOG_PATH)
+        except Exception:
+            trade_rows = []
+        st.caption(f"Applied trades: {applied_count} / {len(trade_rows)}")
+        st.markdown("Log a new trade below.")
+        with st.form("trade_form", clear_on_submit=True):
+            trade_date = st.date_input("Date")
+            account_id = st.text_input("Account ID")
+            action = st.selectbox("Action", ["buy", "sell", "withdraw"])
+            ticker = st.text_input("Ticker")
+            shares = st.number_input("Shares", min_value=0.0, step=1.0)
+            price = st.number_input("Price", min_value=0.0, step=1.0)
+            notes = st.text_input("Notes")
+            
+            if st.form_submit_button("Add Trade"):
+                trade = {
+                    "trade_date": str(trade_date),
+                    "account_id": account_id.strip(),
+                    "action": action,
+                    "ticker": ticker.strip().upper(),
+                    "shares": str(shares),
+                    "price": str(price),
+                    "total_amount": str(shares * price) if shares and price else "0",
+                    "cost_basis_per_share": "",
+                    "realized_gain": "",
+                    "term": "",
+                    "notes": notes.strip()
+                }
+                ok, errors = append_trade(TRADE_LOG_PATH, trade)
+                if ok:
+                    st.success("Trade added!")
+                    st.rerun()
+                else:
+                    for err in errors:
+                        st.error(f"• {err}")
+                        
+        st.markdown("### Recent Trades")
+        try:
+            if trade_rows:
+                rows = trade_rows
+                recent = rows[-5:]
+                recent.reverse()
+                # Handle typed rows returning from ingest gracefully
+                st.dataframe([r.__dict__ if hasattr(r, '__dict__') else r for r in recent], use_container_width=True)
+            else:
+                st.info("No trades found.")
+        except Exception as e:
+            st.error(f"Failed to load trades: {e}")
+        st.markdown("---")
+
+        if st.button("Apply Trades to Snapshot"):
+            try:
+                snap_rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+
+                trade_dicts = [
+                    r.__dict__ if hasattr(r, "__dict__") else r
+                    for r in trade_rows
+                ]
+
+                new_trades, total_count = compute_new_trades(trade_dicts, applied_count)
+
+                if not new_trades:
+                    st.info("No new trades to apply.")
+                else:
+                    new_snap, errors = apply_trades_to_snapshot(snap_rows, new_trades)
+
+                    if errors:
+                        for e in errors:
+                            st.error(f"• {e}")
+                    else:
+                        ok, save_errors = save_holdings(SNAPSHOT_PATH, new_snap, fieldnames)
+                        if ok:
+                            settings_store.set_setting("trades_applied_count", total_count)
+                            st.success("Trades applied successfully!")
+                            st.rerun()
+                        else:
+                            for e in save_errors:
+                                st.error(f"• {e}")
+            except Exception as e:
+                st.error(f"Failed to apply trades: {e}")
 def _setup_profile_editor():
     """Render sidebar controls for editing user profile."""
     profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
@@ -652,6 +740,7 @@ def main():
     _setup_price_sidebar()
     _setup_holdings_editor()
     _setup_profile_editor()
+    _setup_trades_sidebar()
 
     tabs = st.tabs([
         "Portfolio Overview",
