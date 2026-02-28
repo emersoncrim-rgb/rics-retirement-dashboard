@@ -69,32 +69,34 @@ def load_csv_rows(path):
 # ── Price-mode: sidebar controls + unified holdings loader ───────────────────
 
 def _setup_price_sidebar():
-    """Render sidebar controls for price mode. Call once from main()."""
+    """Render sidebar controls for price mode and settings. Call once from main()."""
     st.sidebar.subheader("📡 Price Mode")
 
-    default_disk = settings_store.get_setting("price_mode", "disk") == "disk"
-    default_index = 0 if default_disk else 1
+    mode = st.session_state.get("price_mode", "Snapshot (CSV prices)")
+    api_key = st.session_state.get("finnhub_key", "")
 
-    mode = st.sidebar.radio(
-        "Holdings valuation",
-        ("Snapshot (CSV prices)", "Live (Finnhub)"),
-        index=default_index,
-        key="price_mode",
-    )
+    if mode.startswith("Live") and api_key:
+        st.sidebar.markdown("🟢 Live prices active")
+    else:
+        st.sidebar.markdown("⚪ Using saved prices")
 
-    api_key = None
-    if mode.startswith("Live"):
-        stored_key = settings_store.get_setting("finnhub_api_key", "")
-        api_key = st.sidebar.text_input(
+    with st.sidebar.expander("Settings"):
+        new_key = st.text_input(
             "Finnhub API key",
-            value=os.environ.get("FINNHUB_API_KEY", stored_key),
+            value=api_key,
             type="password",
-            key="finnhub_key",
         )
-        if not api_key:
-            st.sidebar.caption("Set FINNHUB_API_KEY env var or paste key above.")
-
-    return mode, api_key
+        new_mode = st.radio(
+            "Default valuation mode",
+            ("Snapshot (CSV prices)", "Live (Finnhub)"),
+            index=1 if mode.startswith("Live") else 0,
+        )
+        if st.button("Save Settings"):
+            settings_store.set_setting("finnhub_api_key", new_key)
+            settings_store.set_setting("price_mode", "live" if new_mode.startswith("Live") else "disk")
+            st.session_state["finnhub_key"] = new_key
+            st.session_state["price_mode"] = new_mode
+            st.rerun()
 
 if HAS_STREAMLIT:
     @st.cache_data(ttl=120, show_spinner="Fetching live quotes …")
@@ -525,6 +527,38 @@ def main():
         page_icon="📊",
         layout="wide",
     )
+        # ── Initialize State from Settings ───────────────────────────────────────────
+    if "finnhub_key" not in st.session_state:
+        stored_key = settings_store.get_setting("finnhub_api_key", "")
+        st.session_state["finnhub_key"] = os.environ.get("FINNHUB_API_KEY", stored_key)
+    if "price_mode" not in st.session_state:
+        saved_mode = settings_store.get_setting("price_mode", "disk")
+        st.session_state["price_mode"] = "Live (Finnhub)" if saved_mode == "live" else "Snapshot (CSV prices)"
+    if "onboarding_dismissed" not in st.session_state:
+        st.session_state["onboarding_dismissed"] = bool(settings_store.get_setting("finnhub_api_key", ""))
+
+    # ── First-Run Onboarding Wizard ──────────────────────────────────────────────
+    if not st.session_state["onboarding_dismissed"]:
+        st.title("Enable live prices")
+        st.write("To show live prices, paste your Finnhub API key. You only need to do this once.")
+        new_key = st.text_input("Finnhub API key", type="password", key="onboard_key")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save and enable live prices"):
+                settings_store.set_setting("finnhub_api_key", new_key)
+                settings_store.set_setting("price_mode", "live")
+                st.session_state["finnhub_key"] = new_key
+                st.session_state["price_mode"] = "Live (Finnhub)"
+                st.session_state["onboarding_dismissed"] = True
+                st.rerun()
+        with col2:
+            if st.button("Skip for now"):
+                settings_store.set_setting("price_mode", "disk")
+                st.session_state["price_mode"] = "Snapshot (CSV prices)"
+                st.session_state["onboarding_dismissed"] = True
+                st.rerun()
+        return  # Block the rest of the app until interaction is completed
+
     st.title("📊 RICS – Retirement Income & Cash-flow Simulator")
     _setup_price_sidebar()
 
