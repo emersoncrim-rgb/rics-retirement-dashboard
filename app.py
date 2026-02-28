@@ -43,6 +43,7 @@ from rebalance_sim import (
 from recommendations import (
     generate_all_recommendations, generate_recommendations_from_files,
 )
+from profile_store import load_profile, save_profile
 from live_overlay import apply_price_overrides
 from quotes import fetch_quotes_finnhub
 import settings_store
@@ -561,6 +562,7 @@ def main():
 
     st.title("📊 RICS – Retirement Income & Cash-flow Simulator")
     _setup_price_sidebar()
+    _setup_profile_editor()
 
     tabs = st.tabs([
         "Portfolio Overview",
