@@ -73,11 +73,12 @@ def load_csv_rows(path):
 
 
 
-def _show_sector_prefs_summary():
+def _show_sector_prefs_summary(prefs=None):
     """Render a compact read-only summary of sector preferences."""
     try:
-        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
-        prefs = load_sector_preferences(profile)
+        if prefs is None:
+            profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+            prefs = load_sector_preferences(profile)
 
         liked_list = prefs.get("liked_sectors", []) or []
         avoided_list = prefs.get("avoided_sectors", []) or []
@@ -398,7 +399,7 @@ def load_holdings_with_mode():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _show_sector_exposure_panel():
+def _show_sector_exposure_panel(prefs=None):
     """Render a panel showing current sector exposure and matching preferences."""
     with st.expander("Sector Exposure (Top 10)", expanded=False):
         try:
@@ -407,11 +408,12 @@ def _show_sector_exposure_panel():
                 st.info("No holdings found.")
                 return
 
-            try:
-                profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
-                prefs = load_sector_preferences(profile)
-            except Exception:
-                prefs = {"liked_sectors": [], "avoided_sectors": []}
+            if prefs is None:
+                try:
+                    profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                    prefs = load_sector_preferences(profile)
+                except Exception:
+                    prefs = {"liked_sectors": [], "avoided_sectors": []}
 
             liked = [s.strip().lower() for s in prefs.get("liked_sectors", [])]
             avoided = [s.strip().lower() for s in prefs.get("avoided_sectors", [])]
@@ -618,6 +620,22 @@ def tab_dividend_analysis():
     holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
 
+    try:
+        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+        prefs = load_sector_preferences(profile)
+    except Exception:
+        prefs = None
+
+    _show_sector_prefs_summary(prefs)
+    _show_sector_exposure_panel(prefs)
+
+    st.write("Actionable planning opportunities based on your complete financial picture.")
+
+    holdings = load_holdings_with_mode()
+
+    _show_sector_prefs_summary(prefs)
+    _show_sector_exposure_panel(prefs)
+
     annual_expenses = st.number_input("Annual expenses for coverage ratio",
                                        value=90000, step=5000)
     result = analyze_holdings(holdings, annual_expenses=annual_expenses)
@@ -673,8 +691,6 @@ def tab_dividend_analysis():
 def tab_rebalance_simulator():
     """Tab 6: Rebalance simulator with what-if scenarios."""
     st.header("Rebalance Simulator")
-    _show_sector_prefs_summary()
-    _show_sector_exposure_panel()
 
     holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
@@ -698,12 +714,6 @@ def tab_rebalance_simulator():
     band = st.slider("Rebalance band tolerance", 0.01, 0.20, 0.05, 0.01)
 
     if st.button("Run Simulation") or True:  # Auto-run
-        try:
-            profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
-            prefs = load_sector_preferences(profile)
-        except Exception:
-            prefs = None
-
         result = simulate_rebalance(
             holdings,
             target,
@@ -758,12 +768,6 @@ def tab_rebalance_simulator():
 def tab_recommendations():
     """Tab 7: Rule-based recommendations engine."""
     st.header("Recommendations")
-    _show_sector_prefs_summary()
-    _show_sector_exposure_panel()
-
-    st.write("Actionable planning opportunities based on your complete financial picture.")
-
-    holdings = load_holdings_with_mode()
     tax_profile = load_json(TAX_PROFILE_PATH)
     constraints = load_json(CONSTRAINTS_PATH)
     cashflow = load_csv_rows(CASHFLOW_PATH)
