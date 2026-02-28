@@ -72,6 +72,28 @@ def load_csv_rows(path):
         return list(csv.DictReader(f))
 
 
+
+def _show_sector_prefs_summary():
+    """Render a compact read-only summary of sector preferences."""
+    try:
+        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+        prefs = load_sector_preferences(profile)
+
+        liked_list = prefs.get("liked_sectors", []) or []
+        avoided_list = prefs.get("avoided_sectors", []) or []
+
+        liked = ", ".join(liked_list) if liked_list else "—"
+        avoided = ", ".join(avoided_list) if avoided_list else "—"
+        tilt = prefs.get("tilt_strength", 0)
+
+        st.caption(
+            f"**Sector Preferences** — Tilt Strength: {tilt} | "
+            f"Liked: {liked} | Avoided: {avoided}"
+        )
+    except Exception:
+        st.caption("No preferences set.")
+
+
 def _get_sector_prefs():
     """Load merged profile and return sector preferences dict.
     Returns a dict shaped: {"liked_sectors": [...], "avoided_sectors": [...], "tilt_strength": int}
@@ -594,6 +616,8 @@ def tab_dividend_analysis():
 def tab_rebalance_simulator():
     """Tab 6: Rebalance simulator with what-if scenarios."""
     st.header("Rebalance Simulator")
+    _show_sector_prefs_summary()
+
     holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
 
@@ -670,6 +694,8 @@ def tab_rebalance_simulator():
 def tab_recommendations():
     """Tab 7: Rule-based recommendations engine."""
     st.header("Recommendations")
+    _show_sector_prefs_summary()
+
     st.write("Actionable planning opportunities based on your complete financial picture.")
 
     holdings = load_holdings_with_mode()
