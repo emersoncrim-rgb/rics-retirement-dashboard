@@ -397,6 +397,63 @@ def load_holdings_with_mode():
 # TAB IMPLEMENTATIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def _show_sector_exposure_panel():
+    """Render a panel showing current sector exposure and matching preferences."""
+    with st.expander("Sector Exposure (Top 10)", expanded=False):
+        try:
+            holdings = load_holdings_with_mode()
+            if not holdings:
+                st.info("No holdings found.")
+                return
+
+            try:
+                profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                prefs = load_sector_preferences(profile)
+            except Exception:
+                prefs = {"liked_sectors": [], "avoided_sectors": []}
+
+            liked = [s.strip().lower() for s in prefs.get("liked_sectors", [])]
+            avoided = [s.strip().lower() for s in prefs.get("avoided_sectors", [])]
+
+            sectors = {}
+            total_value = 0.0
+            for h in holdings:
+                sec_raw = h.get("sector", "Unknown")
+                sec = str(sec_raw).strip().title() if sec_raw else "Unknown"
+                try:
+                    mv = float(h.get("market_value") or 0.0)
+                except ValueError:
+                    mv = 0.0
+                sectors[sec] = sectors.get(sec, 0.0) + mv
+                total_value += mv
+
+            if total_value <= 0:
+                st.info("Total portfolio value is zero.")
+                return
+
+            sorted_sectors = sorted(sectors.items(), key=lambda x: x[1], reverse=True)[:10]
+
+            data = []
+            chart_data = {}
+            for sec, val in sorted_sectors:
+                pct = val / total_value
+                sec_lower = sec.lower()
+                tag = "Ambient"
+                if sec_lower in liked:
+                    tag = "Liked"
+                elif sec_lower in avoided:
+                    tag = "Avoided"
+
+                data.append({"Sector": sec, "Value": f"${val:,.0f}", "Pct": f"{pct:.1%}", "Tag": tag})
+                chart_data[sec] = pct * 100
+
+            st.dataframe(data, use_container_width=True)
+            st.bar_chart(chart_data)
+        except Exception as e:
+            st.caption(f"Could not load sector exposure: {e}")
+
+
 def tab_portfolio_overview():
     """Tab 1: Portfolio snapshot summary."""
     st.header("Portfolio Overview")
@@ -617,6 +674,7 @@ def tab_rebalance_simulator():
     """Tab 6: Rebalance simulator with what-if scenarios."""
     st.header("Rebalance Simulator")
     _show_sector_prefs_summary()
+    _show_sector_exposure_panel()
 
     holdings = load_holdings_with_mode()
     constraints = load_json(CONSTRAINTS_PATH)
@@ -695,6 +753,7 @@ def tab_recommendations():
     """Tab 7: Rule-based recommendations engine."""
     st.header("Recommendations")
     _show_sector_prefs_summary()
+    _show_sector_exposure_panel()
 
     st.write("Actionable planning opportunities based on your complete financial picture.")
 
