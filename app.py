@@ -698,12 +698,18 @@ def tab_rebalance_simulator():
     band = st.slider("Rebalance band tolerance", 0.01, 0.20, 0.05, 0.01)
 
     if st.button("Run Simulation") or True:  # Auto-run
+        try:
+            profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+            prefs = load_sector_preferences(profile)
+        except Exception:
+            prefs = None
+
         result = simulate_rebalance(
             holdings,
             target,
             constraints=constraints,
             rebalance_band=band,
-            sector_prefs=_get_sector_prefs(),
+            sector_prefs=prefs,
         )
 
         # Summary
@@ -763,13 +769,19 @@ def tab_recommendations():
     cashflow = load_csv_rows(CASHFLOW_PATH)
     rmd_divisors = load_json(RMD_DIVISORS_PATH)
 
+    try:
+        profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+        prefs = load_sector_preferences(profile)
+    except Exception:
+        prefs = None
+
     recs = generate_all_recommendations(
         holdings,
         tax_profile,
         constraints,
         cashflow,
         rmd_divisors,
-        sector_prefs=_get_sector_prefs(),
+        sector_prefs=prefs,
     )
 
     if not recs:
