@@ -77,10 +77,18 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
     rmd_start_age = constraints.get("rmd_start_age", 73)
     rmd_applies_to = constraints.get("rmd_applies_to", ["trad_ira"])
 
+    irmaa_config = constraints.get("irmaa_guardrails", {}) if isinstance(constraints, dict) else {}
+    irmaa_enabled = irmaa_config.get("enabled", False)
+    irmaa_tier1 = irmaa_config.get("tier1_magi_mfj", 206000)
+    irmaa_headroom = irmaa_config.get("target_headroom_below_tier1", 10000)
+    irmaa_threshold = irmaa_tier1 - irmaa_headroom
+
+
     current_age = profile.get("age", 72)
 
     # Deterministic timeline: year-by-year cashflow ledger (with withdrawals + simplified RMD)
     timeline = []
+    plan_warnings = []
     current_year = 2026
     assumed_growth_rate = 0.045
     placeholder_spending = 100000.0
@@ -117,6 +125,22 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
 
         withdrawals_total = sum(withdrawals_by_account.values())
 
+        # 1) Compute estimated MAGI
+        # Using only trad_ira and inherited_ira distributions for now.
+        # Roth withdrawals and taxable withdrawals are excluded in this simplified estimation.
+        magi = withdrawals_by_account.get("trad_ira", 0.0) + withdrawals_by_account.get("inherited_ira", 0.0)
+
+        # 2) Compute simplified estimated tax
+        # Assumption: Flat 12% effective rate on MAGI as a gross placeholder
+        est_tax = magi * 0.12
+
+        # 3) IRMAA Guardrails
+        irmaa_warning = irmaa_enabled and magi > irmaa_threshold
+        irmaa_details = f"Estimated MAGI (${magi:,.2f}) exceeds IRMAA safety threshold (${irmaa_threshold:,.2f})" if irmaa_warning else None
+        if irmaa_warning:
+            plan_warnings.append(f"Year {year}: {irmaa_details}")
+
+
         # Grow remaining balances (simple deterministic growth)
         for acct in balances:
             balances[acct] += balances[acct] * assumed_growth_rate
@@ -133,13 +157,14 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
                 "withdrawals_by_account": {k: round(v, 2) for k, v in withdrawals_by_account.items() if v > 0},
             },
             "tax": {
-                "magi": None,
+                "magi": round(magi, 2),
+                "est_tax": round(est_tax, 2),
                 "federal_tax": None,
                 "state_tax": None,
             },
             "irmaa": {
-                "warning": False,
-                "details": None,
+                "warning": irmaa_warning,
+                "details": irmaa_details,
             },
             "rmd": {
                 "required": round(rmd_required, 2),
@@ -166,7 +191,7 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
     return {
         "timeline": timeline,
         "plan_summary": plan_summary,
-        "warnings": [],
+        "warnings": plan_warnings,
         "meta": {
             "engine_version": "slice_1_deterministic",
             "assumptions": [
