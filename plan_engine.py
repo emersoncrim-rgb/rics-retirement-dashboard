@@ -41,7 +41,14 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
 
     # Simple portfolio value estimate: try common fields
     value_keys = ["market_value", "marketValue", "value", "current_value", "currentValue", "mv"]
-    total_val = 0.0
+    type_keys = ["account_type", "type", "accountType"]
+    balances = {
+        "taxable": 0.0,
+        "trad_ira": 0.0,
+        "inherited_ira": 0.0,
+        "roth_ira": 0.0
+    }
+
     for h in holdings or []:
         v = None
         for k in value_keys:
@@ -51,28 +58,70 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         if v is None:
             continue
         try:
-            total_val += float(str(v).replace(",", "").replace("$", ""))
+            val = float(str(v).replace(",", "").replace("$", ""))
         except Exception:
             continue
 
-    # Deterministic timeline: year-by-year cashflow ledger
+        acct_type = "taxable"
+        for k in type_keys:
+            if k in h and h[k]:
+                val_str = str(h[k]).lower().strip().replace(" ", "_").replace("-", "_")
+                if val_str in balances:
+                    acct_type = val_str
+                break
+        balances[acct_type] += val
+
+    total_val = sum(balances.values())
+
+    withdrawal_sequence = constraints.get("withdrawal_sequence_default", ["taxable", "trad_ira", "inherited_ira", "roth_ira"])
+    rmd_start_age = constraints.get("rmd_start_age", 73)
+    rmd_applies_to = constraints.get("rmd_applies_to", ["trad_ira"])
+
+    current_age = profile.get("age", 72)
+
+    # Deterministic timeline: year-by-year cashflow ledger (with withdrawals + simplified RMD)
     timeline = []
-    current_balance = total_val
     current_year = 2026
     assumed_growth_rate = 0.045
     placeholder_spending = 100000.0
 
     for i in range(1, horizon_years + 1):
         year = current_year + i - 1
-        start_balance = current_balance
+        start_balance = sum(balances.values())
 
         spending_need = placeholder_spending
-        withdrawals_total = min(spending_need, start_balance)
+        rmd_required = 0.0
+        rmd_withdrawn = 0.0
+        withdrawals_by_account = {k: 0.0 for k in balances.keys()}
 
-        growth = (start_balance - withdrawals_total) * assumed_growth_rate
-        end_balance = start_balance - withdrawals_total + growth
+        # Simplified RMD: if age >= start age, apply to configured account types using divisor=25
+        if current_age >= rmd_start_age:
+            for acct in rmd_applies_to:
+                if acct in balances and balances[acct] > 0:
+                    req = min(balances[acct] / 25.0, balances[acct])
+                    rmd_required += req
+                    balances[acct] -= req
+                    withdrawals_by_account[acct] += req
+                    rmd_withdrawn += req
 
-        current_balance = end_balance
+        # Remaining spending need after RMD withdrawals
+        remaining_need = max(0.0, spending_need - rmd_withdrawn)
+        for acct in withdrawal_sequence:
+            if remaining_need <= 0:
+                break
+            if acct in balances and balances[acct] > 0:
+                take = min(balances[acct], remaining_need)
+                balances[acct] -= take
+                withdrawals_by_account[acct] += take
+                remaining_need -= take
+
+        withdrawals_total = sum(withdrawals_by_account.values())
+
+        # Grow remaining balances (simple deterministic growth)
+        for acct in balances:
+            balances[acct] += balances[acct] * assumed_growth_rate
+
+        end_balance = sum(balances.values())
 
         timeline.append({
             "year_index": i,
@@ -80,7 +129,8 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
             "cashflow": {
                 "spending_need": round(spending_need, 2),
                 "income": 0.0,
-                "withdrawals": round(withdrawals_total, 2),
+                "withdrawals_total": round(withdrawals_total, 2),
+                "withdrawals_by_account": {k: round(v, 2) for k, v in withdrawals_by_account.items() if v > 0},
             },
             "tax": {
                 "magi": None,
@@ -92,7 +142,8 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
                 "details": None,
             },
             "rmd": {
-                "required": None,
+                "required": round(rmd_required, 2),
+                "withdrawn": round(rmd_withdrawn, 2),
                 "details": None,
             },
             "portfolio": {
@@ -101,6 +152,8 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
             },
             "notes": [],
         })
+
+        current_age += 1
 
     plan_summary = {
         "horizon_years": horizon_years,
