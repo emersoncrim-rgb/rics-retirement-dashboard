@@ -21,25 +21,7 @@ def _infer_horizon_years(constraints: Dict[str, Any]) -> int:
     return max(1, years)
 
 
-def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraints: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Orchestrate the retirement plan calculation.
-
-    Inputs:
-      - profile: retiree/tax profile (dict)
-      - holdings: list of holdings rows (dicts)
-      - constraints: constraints config (dict)
-
-    Returns:
-      Dict with:
-        - timeline: list of year skeleton entries
-        - plan_summary: high-level placeholder metrics
-        - warnings: list[str]
-        - meta: info about assumptions/versions
-    """
-    horizon_years = _infer_horizon_years(constraints)
-
-    # Simple portfolio value estimate: try common fields
+def get_initial_balances(holdings: List[Dict[str, Any]]) -> Dict[str, float]:
     value_keys = ["market_value", "marketValue", "value", "current_value", "currentValue", "mv"]
     type_keys = ["account_type", "type", "accountType"]
     balances = {
@@ -70,7 +52,62 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
                     acct_type = val_str
                 break
         balances[acct_type] += val
+    return balances
 
+
+def step_one_year(balances: Dict[str, float], current_age: int, spending_need: float,
+                  rmd_start_age: int, rmd_applies_to: List[str], withdrawal_sequence: List[str],
+                  irmaa_enabled: bool, irmaa_threshold: float, assumed_growth_rate: float) -> tuple:
+    start_balance = sum(balances.values())
+    rmd_required, rmd_withdrawn = 0.0, 0.0
+    withdrawals_by_account = {k: 0.0 for k in balances.keys()}
+
+    if current_age >= rmd_start_age:
+        for acct in rmd_applies_to:
+            if acct in balances and balances[acct] > 0:
+                req = min(balances[acct] / 25.0, balances[acct])
+                rmd_required += req; balances[acct] -= req; withdrawals_by_account[acct] += req; rmd_withdrawn += req
+
+    remaining_need = max(0.0, spending_need - rmd_withdrawn)
+    for acct in withdrawal_sequence:
+        if remaining_need <= 0: break
+        if acct in balances and balances[acct] > 0:
+            take = min(balances[acct], remaining_need)
+            balances[acct] -= take; withdrawals_by_account[acct] += take; remaining_need -= take
+
+    withdrawals_total = sum(withdrawals_by_account.values())
+    magi = withdrawals_by_account.get("trad_ira", 0.0) + withdrawals_by_account.get("inherited_ira", 0.0)
+    est_tax = magi * 0.12
+    irmaa_warning = irmaa_enabled and magi > irmaa_threshold
+    irmaa_details = f"Estimated MAGI (${magi:,.2f}) exceeds IRMAA safety threshold (${irmaa_threshold:,.2f})" if irmaa_warning else None
+
+    for acct in balances:
+        balances[acct] += balances[acct] * assumed_growth_rate
+
+    end_balance = sum(balances.values())
+    return (start_balance, end_balance, withdrawals_total, withdrawals_by_account,
+            rmd_required, rmd_withdrawn, magi, est_tax, irmaa_warning, irmaa_details)
+
+
+def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraints: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Orchestrate the retirement plan calculation.
+
+    Inputs:
+      - profile: retiree/tax profile (dict)
+      - holdings: list of holdings rows (dicts)
+      - constraints: constraints config (dict)
+
+    Returns:
+      Dict with:
+        - timeline: list of year skeleton entries
+        - plan_summary: high-level placeholder metrics
+        - warnings: list[str]
+        - meta: info about assumptions/versions
+    """
+    horizon_years = _infer_horizon_years(constraints)
+
+    balances = get_initial_balances(holdings)
     total_val = sum(balances.values())
 
     withdrawal_sequence = constraints.get("withdrawal_sequence_default", ["taxable", "trad_ira", "inherited_ira", "roth_ira"])
@@ -91,67 +128,45 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
     plan_warnings = []
     current_year = 2026
     assumed_growth_rate = 0.045
-    placeholder_spending = 100000.0
+    base_spending = constraints.get("placeholder_spending", 100000.0)
+    inflation_rate = constraints.get("inflation_rate", 0.025)
 
+    ss_annual = profile.get("social_security_annual", 0.0)
+    ss_start_age = profile.get("social_security_start_age", 67)
+    cola = profile.get("cola", inflation_rate)
+    pension_annual = profile.get("pension_annual", 0.0)
+    pension_start_age = profile.get("pension_start_age", 65)
+
+    
     for i in range(1, horizon_years + 1):
         year = current_year + i - 1
-        start_balance = sum(balances.values())
+        spending_need = base_spending * ((1 + inflation_rate) ** (i - 1))
+        income_ss = ss_annual * ((1 + cola) ** (current_age - ss_start_age)) if current_age >= ss_start_age else 0.0
+        income_pension = pension_annual if current_age >= pension_start_age else 0.0
+        income_total = income_ss + income_pension
+        net_spending_need = max(0.0, spending_need - income_total)
 
-        spending_need = placeholder_spending
-        rmd_required = 0.0
-        rmd_withdrawn = 0.0
-        withdrawals_by_account = {k: 0.0 for k in balances.keys()}
+        (start_balance, end_balance, withdrawals_total, withdrawals_by_account,
+         rmd_required, rmd_withdrawn, magi, est_tax, irmaa_warning, irmaa_details) = step_one_year(
+            balances, current_age, net_spending_need,
+            rmd_start_age, rmd_applies_to, withdrawal_sequence,
+            irmaa_enabled, irmaa_threshold, assumed_growth_rate
+        )
 
-        # Simplified RMD: if age >= start age, apply to configured account types using divisor=25
-        if current_age >= rmd_start_age:
-            for acct in rmd_applies_to:
-                if acct in balances and balances[acct] > 0:
-                    req = min(balances[acct] / 25.0, balances[acct])
-                    rmd_required += req
-                    balances[acct] -= req
-                    withdrawals_by_account[acct] += req
-                    rmd_withdrawn += req
-
-        # Remaining spending need after RMD withdrawals
-        remaining_need = max(0.0, spending_need - rmd_withdrawn)
-        for acct in withdrawal_sequence:
-            if remaining_need <= 0:
-                break
-            if acct in balances and balances[acct] > 0:
-                take = min(balances[acct], remaining_need)
-                balances[acct] -= take
-                withdrawals_by_account[acct] += take
-                remaining_need -= take
-
-        withdrawals_total = sum(withdrawals_by_account.values())
-
-        # 1) Compute estimated MAGI
-        # Using only trad_ira and inherited_ira distributions for now.
-        # Roth withdrawals and taxable withdrawals are excluded in this simplified estimation.
-        magi = withdrawals_by_account.get("trad_ira", 0.0) + withdrawals_by_account.get("inherited_ira", 0.0)
-
-        # 2) Compute simplified estimated tax
-        # Assumption: Flat 12% effective rate on MAGI as a gross placeholder
-        est_tax = magi * 0.12
-
-        # 3) IRMAA Guardrails
-        irmaa_warning = irmaa_enabled and magi > irmaa_threshold
-        irmaa_details = f"Estimated MAGI (${magi:,.2f}) exceeds IRMAA safety threshold (${irmaa_threshold:,.2f})" if irmaa_warning else None
         if irmaa_warning:
             plan_warnings.append(f"Year {year}: {irmaa_details}")
-
-
-        # Grow remaining balances (simple deterministic growth)
-        for acct in balances:
-            balances[acct] += balances[acct] * assumed_growth_rate
-
-        end_balance = sum(balances.values())
 
         timeline.append({
             "year_index": i,
             "year": year,
             "cashflow": {
                 "spending_need": round(spending_need, 2),
+                "income_total": round(income_total, 2),
+                "income_breakdown": {
+                    "ss": round(income_ss, 2),
+                    "pension": round(income_pension, 2)
+                },
+                "net_spending_need": round(net_spending_need, 2),
                 "income": 0.0,
                 "withdrawals_total": round(withdrawals_total, 2),
                 "withdrawals_by_account": {k: round(v, 2) for k, v in withdrawals_by_account.items() if v > 0},
@@ -179,6 +194,7 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         })
 
         current_age += 1
+
 
     plan_summary = {
         "horizon_years": horizon_years,
