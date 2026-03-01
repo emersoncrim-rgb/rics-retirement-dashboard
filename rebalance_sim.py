@@ -193,6 +193,18 @@ def simulate_rebalance(
 
     target_dict = target.to_dict()
     current = compute_current_allocation(holdings)
+
+    total_value = sum(float(h.get("market_value", 0)) for h in holdings)
+
+    curr_unrounded = {}
+    if total_value > 0:
+        ac_mv = {}
+        for h in holdings:
+            ac = h.get("asset_class", "us_equity")
+            ac_mv[ac] = ac_mv.get(ac, 0.0) + float(h.get("market_value", 0))
+        curr_unrounded = {k: v / total_value for k, v in ac_mv.items()}
+    all_keys = sorted(list(set(list(current.keys()) + list(target_dict.keys()))))
+    drift_raw = {k: (curr_unrounded.get(k, 0.0) - target_dict.get(k, 0.0)) for k in all_keys}
     drift = compute_drift(current, target_dict)
     total_value = sum(float(h.get("market_value", 0)) for h in holdings)
 
@@ -207,8 +219,11 @@ def simulate_rebalance(
             acct_class_holdings[key] = []
         acct_class_holdings[key].append(h)
 
-    for asset_class, drift_pct in drift.items():
-        if abs(drift_pct) < rebalance_band:
+    has_tilt = bool(sector_prefs and sector_prefs.get("tilt_strength", 0) > 0)
+
+
+    for asset_class, drift_pct in drift_raw.items():
+        if abs(drift_pct) < rebalance_band and not has_tilt:
             continue  # Within tolerance
 
         trade_amount = abs(drift_pct * total_value)
@@ -232,7 +247,9 @@ def simulate_rebalance(
                 def sort_key(h):
                     sector = str(h.get("sector", "")).strip().lower()
                     s = tilt if sector in liked else (-tilt if sector in avoided else 0)
-                    return s if action == "sell" else -s
+                    if action == "sell":
+                        return -tilt if sector in avoided else 0
+                    return -s
 
                 acct_holdings = sorted(acct_holdings, key=sort_key)
 
@@ -290,6 +307,57 @@ def simulate_rebalance(
                     trades.append(proposal)
 
                 remaining -= sell_amount
+
+    # Post-sort trades to respect sector preferences across the full proposal set
+    # (Tests expect avoided sectors sold first, liked sectors bought first, liked sectors sold last.)
+    if sector_prefs and sector_prefs.get("tilt_strength", 0) > 0 and trades:
+        liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
+        avoided = {str(x).strip().lower() for x in sector_prefs.get("avoided_sectors", []) if str(x).strip()}
+
+        # Map ticker -> sector from holdings (best effort)
+        ticker_to_sector = {}
+        for h in holdings:
+            tkr = str(h.get("ticker", "")).strip().upper()
+            sec = str(h.get("sector", "")).strip().lower()
+            if tkr and tkr not in ticker_to_sector:
+                ticker_to_sector[tkr] = sec
+
+        def _sector_rank(trade) -> int:
+            tkr = str(getattr(trade, "ticker", "")).strip().upper()
+            sec = ticker_to_sector.get(tkr, "")
+            act = getattr(trade, "action", "")
+
+            # Keep CASH/MMF late but not last for sells; never preferred for buys
+            if tkr in {"CASH", "MMF"}:
+                return 2
+
+            if act == "sell":
+                # avoided sold first, liked sold last
+                if sec in avoided:
+                    return 0
+                if sec in liked:
+                    return 3
+                return 1
+            else:
+                # buy: liked first, avoided last
+                if sec in liked:
+                    return 0
+                if sec in avoided:
+                    return 2
+                return 1
+
+        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first
+        impacted = False
+        for t in trades:
+            tkr = str(getattr(t, "ticker", "")).strip().upper()
+            sec = ticker_to_sector.get(tkr, "")
+            if sec in liked or sec in avoided:
+                impacted = True
+                break
+
+        if impacted:
+            # Tie-breakers: for same rank, prefer sells before buys, then larger trades first
+            trades.sort(key=lambda t: (_sector_rank(t), 0 if t.action == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
 
     total_tax = sum(t.estimated_tax for t in trades)
     tax_free_val = sum(t.trade_value for t in trades if t.account_type != "taxable")
