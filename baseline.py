@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 
 from plan_engine import run_plan
+from monte_carlo import run_monte_carlo
 
 
 def load_csv_rows(path: Path):
@@ -81,6 +82,18 @@ def run_baseline():
     print("\n--- Plan Summary ---")
     for k, v in plan_result.get("plan_summary", {}).items():
         print(f"  {k}: {v}")
+
+    
+    print("\n--- Monte Carlo Summary ---")
+    try:
+        mc_result = run_monte_carlo(profile, holdings, constraints)
+        print(f"  Success Probability: {mc_result['success_probability']:.2%}")
+        print(f"  Simulations: {mc_result['num_simulations']} (over {mc_result['projection_years']} years)")
+        print("  End Balance Percentiles:")
+        for p, val in mc_result["end_balance_percentiles"].items():
+            print(f"    {p}: ${val:,.2f}")
+    except Exception as e:
+        print("Monte Carlo run failed:", e)
 
     print("\nBaseline scenario executed successfully.")
 
