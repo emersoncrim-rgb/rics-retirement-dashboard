@@ -12,6 +12,7 @@ import sys
 
 from plan_engine import run_plan
 from monte_carlo import run_monte_carlo
+from advisor_actions import evaluate_actions
 
 
 def load_csv_rows(path: Path):
@@ -92,6 +93,13 @@ def run_baseline():
         print("  End Balance Percentiles:")
         for p, val in mc_result["end_balance_percentiles"].items():
             print(f"    {p}: ${val:,.2f}")
+            
+        print("\n--- Advisor Actions (Top 3) ---")
+        actions = evaluate_actions(profile, holdings, constraints)
+        for i, act in enumerate(actions[:3], 1):
+            print(f"  {i}. {act['name']}")
+            print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
+            print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
     except Exception as e:
         print("Monte Carlo run failed:", e)
 
