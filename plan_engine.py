@@ -251,8 +251,15 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
             "tax": {
                 "magi": round(magi, 2),
                 "est_tax": round(est_tax_total, 2),
-                "federal_tax": None,
-                "state_tax": None,
+                "federal_tax": round(tax_details["federal_tax_est"], 2),
+                "state_tax": round(tax_details["state_tax_est"], 2),
+                "taxable_ss": round(tax_details["taxable_ss"], 2),
+                "capital_gains": round(tax_details["capital_gains"], 2),
+                "ordinary_income": round(tax_details["ordinary_income"], 2),
+                "state_code": tax_details["state_code"],
+                "state_taxable_income": round(tax_details["state_taxable_income"], 2),
+                "est_tax_total": round(est_tax_total, 2),
+
             },
             "irmaa": {
                 "warning": irmaa_warning,
