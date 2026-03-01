@@ -820,7 +820,27 @@ def tab_recommendations():
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def run_baseline():
+    """Minimal callable entrypoint to run a baseline scenario."""
+    print("--- RICS Baseline Scenario ---")
+    try:
+        holdings = load_csv_rows(SNAPSHOT_PATH)
+        constraints = load_json(CONSTRAINTS_PATH)
+        total_val = sum(float(h.get("market_value", 0)) for h in holdings)
+        print(f"Loaded {len(holdings)} holdings from {SNAPSHOT_PATH.name}")
+        print(f"Total Portfolio Value: ${total_val:,.2f}")
+        print(f"Loaded {len(constraints)} constraints from {CONSTRAINTS_PATH.name}")
+        print("Baseline scenario executed successfully.")
+    except Exception as e:
+        print(f"Baseline scenario failed: {e}")
+        sys.exit(1)
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--baseline":
+        run_baseline()
+        return
+
     if not HAS_STREAMLIT:
         print("Streamlit not installed. Install with: pip install streamlit")
         print("Running quick self-test instead...\n")
