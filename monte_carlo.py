@@ -26,26 +26,36 @@ def run_monte_carlo(profile: Dict[str, Any], holdings: List[Dict[str, Any]], con
 
     successful_sims = 0
     end_balances = []
+    total_irmaa_warning_years = 0
+    sims_with_irmaa_warnings = 0
 
     for _ in range(num_simulations):
         balances = initial_balances.copy()
         current_age = base_age
         failed = False
+        sim_irmaa_warnings = 0
 
         for _ in range(projection_years):
             # sample annual return (placeholder blended return)
             annual_return = random.gauss(0.055, 0.10)
 
             # step_one_year expects assumed_growth_rate parameter; pass sampled return here
-            _, end_balance, _, _, _, _, _, _, _, _ = step_one_year(
+            _, end_balance, _, _, _, _, _, _, irmaa_warning, _ = step_one_year(
                 balances, current_age, placeholder_spending,
                 rmd_start_age, rmd_applies_to, withdrawal_sequence,
                 irmaa_enabled, irmaa_threshold, annual_return
             )
 
+            if irmaa_warning:
+                sim_irmaa_warnings += 1
+
             if end_balance <= 0:
                 failed = True
             current_age += 1
+
+        total_irmaa_warning_years += sim_irmaa_warnings
+        if sim_irmaa_warnings > 0:
+            sims_with_irmaa_warnings += 1
 
         if not failed:
             successful_sims += 1
@@ -68,6 +78,8 @@ def run_monte_carlo(profile: Dict[str, Any], holdings: List[Dict[str, Any]], con
             "p75": get_percentile(0.75),
             "p95": get_percentile(0.95)
         },
+        "avg_irmaa_warning_years": total_irmaa_warning_years / num_simulations if num_simulations > 0 else 0.0,
+        "pct_sims_with_any_irmaa_warning": sims_with_irmaa_warnings / num_simulations if num_simulations > 0 else 0.0,
         "num_simulations": num_simulations,
         "projection_years": projection_years
     }

@@ -11,6 +11,7 @@ def evaluate_actions(profile: Dict[str, Any], holdings: List[Dict[str, Any]], co
     baseline_result = run_monte_carlo(profile, holdings, constraints)
     baseline_prob = baseline_result["success_probability"]
     baseline_median = baseline_result["end_balance_percentiles"]["p50"]
+    baseline_irmaa = baseline_result.get("avg_irmaa_warning_years", 0.0)
 
     actions = [
         {
@@ -51,12 +52,20 @@ def evaluate_actions(profile: Dict[str, Any], holdings: List[Dict[str, Any]], co
         mc_result = run_monte_carlo(profile, holdings, mod_constraints)
         prob = mc_result["success_probability"]
         median = mc_result["end_balance_percentiles"]["p50"]
+        irmaa = mc_result.get("avg_irmaa_warning_years", 0.0)
+
+        delta_prob = prob - baseline_prob
+        delta_median = median - baseline_median
+        delta_irmaa = irmaa - baseline_irmaa
+        score = (delta_prob * 100.0) + (delta_median / 100000.0) - (delta_irmaa * 1.5)
 
         results.append({
             "name": action["name"],
-            "delta_success_probability": prob - baseline_prob,
-            "delta_median_end_balance": median - baseline_median
+            "delta_success_probability": delta_prob,
+            "delta_median_end_balance": delta_median,
+            "delta_avg_irmaa_warning_years": delta_irmaa,
+            "score": score
         })
 
-    results.sort(key=lambda x: x["delta_success_probability"], reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
     return results

@@ -98,8 +98,10 @@ def run_baseline():
         actions = evaluate_actions(profile, holdings, constraints)
         for i, act in enumerate(actions[:3], 1):
             print(f"  {i}. {act['name']}")
+            print(f"     Score:          {act['score']:+.2f}")
             print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
             print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
+            print(f"     IRMAA Warn Yrs Δ: {act['delta_avg_irmaa_warning_years']:+.2f}")
     except Exception as e:
         print("Monte Carlo run failed:", e)
 
