@@ -55,15 +55,32 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         except Exception:
             continue
 
-    # Skeleton timeline: years indexed from 1..horizon_years (we'll replace with calendar years later)
+    # Deterministic timeline: year-by-year cashflow ledger
     timeline = []
+    current_balance = total_val
+    current_year = 2026
+    assumed_growth_rate = 0.045
+    placeholder_spending = 100000.0
+
     for i in range(1, horizon_years + 1):
+        year = current_year + i - 1
+        start_balance = current_balance
+
+        spending_need = placeholder_spending
+        withdrawals_total = min(spending_need, start_balance)
+
+        growth = (start_balance - withdrawals_total) * assumed_growth_rate
+        end_balance = start_balance - withdrawals_total + growth
+
+        current_balance = end_balance
+
         timeline.append({
             "year_index": i,
+            "year": year,
             "cashflow": {
-                "spending_need": None,
-                "income": None,
-                "withdrawals": None,
+                "spending_need": round(spending_need, 2),
+                "income": 0.0,
+                "withdrawals": round(withdrawals_total, 2),
             },
             "tax": {
                 "magi": None,
@@ -79,8 +96,8 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
                 "details": None,
             },
             "portfolio": {
-                "start_balance": None,
-                "end_balance": None,
+                "start_balance": round(start_balance, 2),
+                "end_balance": round(end_balance, 2),
             },
             "notes": [],
         })
@@ -98,10 +115,11 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         "plan_summary": plan_summary,
         "warnings": [],
         "meta": {
-            "engine_version": "slice_1",
+            "engine_version": "slice_1_deterministic",
             "assumptions": [
-                "Timeline is a skeleton only",
-                "No withdrawals/taxes/RMD/IRMAA computed yet",
+                "Timeline uses deterministic year-by-year cashflow",
+                "Assumed constant $100k spending and 4.5% growth",
+                "No taxes/RMD/IRMAA computed yet",
                 "Portfolio value is best-effort from holdings rows",
             ],
         },
