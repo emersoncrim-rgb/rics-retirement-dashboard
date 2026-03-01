@@ -2,21 +2,26 @@
 """
 Minimal baseline runner that does NOT import the full app.
 
-Purpose: Provide a sanity-check that the repo can read the snapshot and constraints
-even if the main app entrypoint has optional/missing module dependencies.
+Slice 0: Sanity-check that snapshot + constraints load.
+Slice 1: Call plan_engine.run_plan(...) and print plan_summary.
 """
 import csv
 import json
 from pathlib import Path
 import sys
 
+from plan_engine import run_plan
+
+
 def load_csv_rows(path: Path):
     with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
+
 def load_json(path: Path):
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def find_existing_path(candidates):
     for p in candidates:
@@ -24,10 +29,10 @@ def find_existing_path(candidates):
             return p
     return None
 
+
 def run_baseline():
     print("--- RICS Baseline Scenario ---")
 
-    # Try common locations based on your repo + the earlier files
     snapshot_path = find_existing_path([
         Path("accounts_snapshot.csv"),
         Path("data/accounts_snapshot.csv"),
@@ -35,6 +40,10 @@ def run_baseline():
     constraints_path = find_existing_path([
         Path("constraints.json"),
         Path("data/constraints.json"),
+    ])
+    tax_profile_path = find_existing_path([
+        Path("tax_profile.json"),
+        Path("data/tax_profile.json"),
     ])
 
     if snapshot_path is None:
@@ -48,36 +57,33 @@ def run_baseline():
     holdings = load_csv_rows(snapshot_path)
     constraints = load_json(constraints_path)
 
-    # Be resilient to different column names in the snapshot
-    value_keys = ["market_value", "marketValue", "value", "current_value", "currentValue", "mv"]
-    total_val = 0.0
-    missing = 0
-
-    for h in holdings:
-        v = None
-        for k in value_keys:
-            if k in h and h[k] not in (None, ""):
-                v = h[k]
-                break
-        if v is None:
-            missing += 1
-            continue
+    profile = {}
+    if tax_profile_path is not None:
         try:
-            total_val += float(str(v).replace(",", "").replace("$", ""))
-        except Exception:
-            missing += 1
+            profile = load_json(tax_profile_path)
+        except Exception as e:
+            print(f"Warning: failed to load tax profile from {tax_profile_path}: {e}")
+            profile = {}
 
     print(f"Loaded {len(holdings)} holdings from {snapshot_path}")
-    print(f"Total Portfolio Value (best-effort): ${total_val:,.2f}")
-    if missing:
-        print(f"Note: {missing} rows missing a recognizable value column (checked {value_keys})")
-
     if isinstance(constraints, dict):
         print(f"Loaded constraints keys: {len(constraints)} from {constraints_path}")
     else:
         print(f"Loaded constraints (non-dict) from {constraints_path}")
 
-    print("Baseline scenario executed successfully.")
+    if tax_profile_path is not None:
+        print(f"Loaded tax profile from {tax_profile_path}")
+    else:
+        print("Tax profile not found (tax_profile.json or data/tax_profile.json) — continuing with empty profile.")
+
+    plan_result = run_plan(profile, holdings, constraints)
+
+    print("\n--- Plan Summary ---")
+    for k, v in plan_result.get("plan_summary", {}).items():
+        print(f"  {k}: {v}")
+
+    print("\nBaseline scenario executed successfully.")
+
 
 if __name__ == "__main__":
     run_baseline()
