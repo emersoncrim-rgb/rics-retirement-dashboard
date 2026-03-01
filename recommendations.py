@@ -21,6 +21,9 @@ import json
 from dataclasses import dataclass, asdict
 from datetime import date
 from typing import Optional
+import copy
+from rebalance_sim import simulate_rebalance, score_to_allocation, compute_current_allocation, compute_drift
+from monte_carlo import run_monte_carlo
 
 
 @dataclass
@@ -707,6 +710,54 @@ def generate_all_recommendations(
     severity_order = {"high": 0, "medium": 1, "low": 2, "info": 3}
     recs.sort(key=lambda r: severity_order.get(r.severity, 9))
     return recs
+
+
+
+
+def recommend_rebalance(profile: dict, holdings: list[dict], constraints: dict) -> dict:
+    # Normalize aggressiveness_score (constraints may store it as a dict)
+    raw = constraints.get("aggressiveness_score", 50) if isinstance(constraints, dict) else 50
+    if isinstance(raw, dict):
+        raw = raw.get("value", raw.get("score", raw.get("default", 50)))
+    aggressiveness = int(raw) if isinstance(raw, (int, float)) else 50
+
+    target = score_to_allocation(aggressiveness)
+
+    sim_res = simulate_rebalance(holdings, target, constraints)
+
+    after_holdings = copy.deepcopy(holdings)
+    for t in sim_res.trades:
+        matched = False
+        for h in after_holdings:
+            if h.get("account_type") == t.account_type and h.get("ticker") == t.ticker:
+                if t.action == "sell":
+                    h["market_value"] = max(0.0, float(h.get("market_value", 0)) - t.trade_value)
+                else:
+                    h["market_value"] = float(h.get("market_value", 0)) + t.trade_value
+                matched = True
+                break
+        if not matched and t.action == "buy":
+            after_holdings.append({
+                "account_type": t.account_type,
+                "ticker": t.ticker,
+                "asset_class": t.asset_class,
+                "market_value": t.trade_value,
+            })
+
+    mc_before = run_monte_carlo(profile, holdings, constraints)
+    mc_after = run_monte_carlo(profile, after_holdings, constraints)
+
+    return {
+        "target_allocation": sim_res.target_allocation,
+        "current_allocation": sim_res.current_allocation,
+        "drift": sim_res.drift,
+        "proposed_trades": [t.to_dict() for t in sim_res.trades],
+        "holdings_after": after_holdings,
+        "expected_drift_after": compute_drift(compute_current_allocation(after_holdings), sim_res.target_allocation),
+        "delta_success_probability": mc_after["success_probability"] - mc_before["success_probability"],
+        "delta_median_end_balance": mc_after["end_balance_percentiles"]["p50"] - mc_before["end_balance_percentiles"]["p50"],
+        "delta_avg_irmaa_warning_years": mc_after["avg_irmaa_warning_years"] - mc_before["avg_irmaa_warning_years"]
+    }
 
 
 def generate_recommendations_from_files(
