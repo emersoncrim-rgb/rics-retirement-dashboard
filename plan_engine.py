@@ -21,6 +21,42 @@ def _infer_horizon_years(constraints: Dict[str, Any]) -> int:
     return max(1, years)
 
 
+def _calc_fed_tax(income: float) -> float:
+    brackets = [
+        (0, 23200, 0.10),
+        (23200, 94300, 0.12),
+        (94300, 201050, 0.22),
+        (201050, 383900, 0.24),
+        (383900, 487450, 0.32),
+        (487450, 731200, 0.35),
+        (731200, float('inf'), 0.37)
+    ]
+    tax = 0.0
+    for lower, upper, rate in brackets:
+        if income > lower:
+            tax += (min(income, upper) - lower) * rate
+    return tax
+
+def _get_state_tax_info(state: str) -> tuple:
+    s = str(state).strip().upper()
+    if s in ["OREGON", "OR"]:
+        return "OR", 5000.0, [(0, 10000, 0.0475), (10000, 25000, 0.0675), (25000, 125000, 0.0875), (125000, float('inf'), 0.099)]
+    elif s in ["CALIFORNIA", "CA"]:
+        return "CA", 10000.0, [(0, 20000, 0.01), (20000, 50000, 0.02), (50000, 100000, 0.04), (100000, float('inf'), 0.08)]
+    elif s in ["NEW YORK", "NY"]:
+        return "NY", 16000.0, [(0, 17000, 0.04), (17000, 24000, 0.045), (24000, float('inf'), 0.06)]
+    elif s in ["TEXAS", "TX", "FLORIDA", "FL"]:
+        return s[:2] if len(s) > 2 else s, 0.0, [(0, float('inf'), 0.0)]
+    return "UNKNOWN", 0.0, [(0, float('inf'), 0.0)]
+
+def _calc_state_tax(income: float, brackets: list) -> float:
+    tax = 0.0
+    for lower, upper, rate in brackets:
+        if income > lower:
+            tax += (min(income, upper) - lower) * rate
+    return tax
+
+
 def get_initial_balances(holdings: List[Dict[str, Any]]) -> Dict[str, float]:
     value_keys = ["market_value", "marketValue", "value", "current_value", "currentValue", "mv"]
     type_keys = ["account_type", "type", "accountType"]
@@ -57,7 +93,9 @@ def get_initial_balances(holdings: List[Dict[str, Any]]) -> Dict[str, float]:
 
 def step_one_year(balances: Dict[str, float], current_age: int, spending_need: float,
                   rmd_start_age: int, rmd_applies_to: List[str], withdrawal_sequence: List[str],
-                  irmaa_enabled: bool, irmaa_threshold: float, assumed_growth_rate: float) -> tuple:
+                  irmaa_enabled: bool, irmaa_threshold: float, assumed_growth_rate: float,
+                  ss_income: float = 0.0, state: str = "None", fed_std_deduction: float = 29200.0,
+                  ltcg_rate: float = 0.12) -> tuple:
     start_balance = sum(balances.values())
     rmd_required, rmd_withdrawn = 0.0, 0.0
     withdrawals_by_account = {k: 0.0 for k in balances.keys()}
@@ -76,17 +114,51 @@ def step_one_year(balances: Dict[str, float], current_age: int, spending_need: f
             balances[acct] -= take; withdrawals_by_account[acct] += take; remaining_need -= take
 
     withdrawals_total = sum(withdrawals_by_account.values())
-    magi = withdrawals_by_account.get("trad_ira", 0.0) + withdrawals_by_account.get("inherited_ira", 0.0)
-    est_tax = magi * 0.12
+    
+    ira_withdrawals = withdrawals_by_account.get("trad_ira", 0.0) + withdrawals_by_account.get("inherited_ira", 0.0)
+    taxable_withdrawals = withdrawals_by_account.get("taxable", 0.0)
+    capital_gains = taxable_withdrawals * 0.40
+
+    other_income = ira_withdrawals + capital_gains
+    provisional_income = other_income + 0.5 * ss_income
+    taxable_ss = min(0.85 * ss_income, max(0.0, provisional_income - 32000.0) * 0.85)
+
+    magi = ira_withdrawals + taxable_ss + capital_gains
+
+    ordinary_income = ira_withdrawals + taxable_ss
+    fed_taxable_income = max(0.0, ordinary_income - fed_std_deduction)
+    fed_ordinary_tax = _calc_fed_tax(fed_taxable_income)
+    ltcg_tax = capital_gains * ltcg_rate
+    federal_est_tax = fed_ordinary_tax + ltcg_tax
+
+    state_code, state_std_deduction, state_brackets = _get_state_tax_info(state)
+    state_taxable_income = max(0.0, ordinary_income + capital_gains - state_std_deduction)
+    state_est_tax = _calc_state_tax(state_taxable_income, state_brackets)
+
+    est_tax_total = federal_est_tax + state_est_tax
+
+
     irmaa_warning = irmaa_enabled and magi > irmaa_threshold
     irmaa_details = f"Estimated MAGI (${magi:,.2f}) exceeds IRMAA safety threshold (${irmaa_threshold:,.2f})" if irmaa_warning else None
+
+    tax_details = {
+        "taxable_ss": taxable_ss,
+        "capital_gains": capital_gains,
+        "ordinary_income": ordinary_income,
+        "federal_tax_est": federal_est_tax,
+        "state_code": state_code,
+        "state_taxable_income": state_taxable_income,
+        "state_tax_est": state_est_tax,
+        "est_tax_total": est_tax_total
+    }
+
 
     for acct in balances:
         balances[acct] += balances[acct] * assumed_growth_rate
 
     end_balance = sum(balances.values())
     return (start_balance, end_balance, withdrawals_total, withdrawals_by_account,
-            rmd_required, rmd_withdrawn, magi, est_tax, irmaa_warning, irmaa_details)
+            rmd_required, rmd_withdrawn, magi, est_tax_total, irmaa_warning, irmaa_details, tax_details)
 
 
 def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraints: Dict[str, Any]) -> Dict[str, Any]:
@@ -122,6 +194,10 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
 
 
     current_age = profile.get("age", 72)
+    state = profile.get("state", "None")
+
+    fed_std_deduction = constraints.get("federal_standard_deduction_mfj", 29200.0)
+    ltcg_rate = constraints.get("ltcg_effective_rate", 0.12)
 
     # Deterministic timeline: year-by-year cashflow ledger (with withdrawals + simplified RMD)
     timeline = []
@@ -147,10 +223,11 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         net_spending_need = max(0.0, spending_need - income_total)
 
         (start_balance, end_balance, withdrawals_total, withdrawals_by_account,
-         rmd_required, rmd_withdrawn, magi, est_tax, irmaa_warning, irmaa_details) = step_one_year(
+         rmd_required, rmd_withdrawn, magi, est_tax_total, irmaa_warning, irmaa_details, tax_details) = step_one_year(
             balances, current_age, net_spending_need,
             rmd_start_age, rmd_applies_to, withdrawal_sequence,
-            irmaa_enabled, irmaa_threshold, assumed_growth_rate
+            irmaa_enabled, irmaa_threshold, assumed_growth_rate,
+            ss_income=income_ss, state=state, fed_std_deduction=fed_std_deduction, ltcg_rate=ltcg_rate
         )
 
         if irmaa_warning:
@@ -173,7 +250,7 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
             },
             "tax": {
                 "magi": round(magi, 2),
-                "est_tax": round(est_tax, 2),
+                "est_tax": round(est_tax_total, 2),
                 "federal_tax": None,
                 "state_tax": None,
             },
@@ -215,6 +292,8 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
                 "Assumed constant $100k spending and 4.5% growth",
                 "No taxes/RMD/IRMAA computed yet",
                 "Portfolio value is best-effort from holdings rows",
+                "Capital gains estimated as 40% of taxable withdrawals",
+                "State tax uses minimal hardcoded progressive brackets for few states",
             ],
         },
     }
