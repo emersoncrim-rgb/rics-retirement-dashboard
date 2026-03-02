@@ -1,0 +1,1054 @@
+"""
+app.py - RICS Streamlit Application
+
+Main entry point for the Retirement Income & Cash-flow Simulator.
+Run with: streamlit run app.py
+
+Tabs:
+
+Portfolio Overview       (accounts snapshot summary)
+
+Cash Flow Plan           (income/expenses/lumpy items)
+
+Tax Dashboard            (brackets, SS taxation, IRMAA)
+
+Broker Import        [NEW] - Import & normalize brokerage CSVs
+
+Dividend Analysis    [NEW] - Income analysis, projections, upgrades
+
+Rebalance Simulator  [NEW] - What-if rebalancing with tax impact
+
+Recommendations      [NEW] - Rule-based actionable planning flags
+"""
+
+import csv
+import json
+import io
+import os
+import sys
+from pathlib import Path
+
+-- Streamlit import with graceful fallback ----------------------------------
+try:
+import streamlit as st
+HAS_STREAMLIT = True
+except ImportError:
+HAS_STREAMLIT = False
+
+-- Module imports -----------------------------------------------------------
+from broker_import import (
+parse_broker_csv, holdings_to_csv, load_accounts_snapshot,
+merge_holdings, HoldingRow, detect_broker,
+)
+from dividend_analyzer import (
+analyze_holdings, find_upgrade_opportunities, load_holdings_from_csv,
+)
+from rebalance_sim import (
+score_to_allocation, compute_current_allocation, compute_drift,
+simulate_rebalance, AllocationTarget,
+)
+from recommendations import (
+generate_all_recommendations, generate_recommendations_from_files,
+)
+from profile_store import load_profile, save_profile
+from holdings_store import load_holdings, validate_holdings, save_holdings
+from live_overlay import apply_price_overrides
+from quotes import fetch_quotes_finnhub
+from trades_store import load_trades, validate_trade, append_trade
+from trade_apply import apply_trades_to_snapshot
+from trades_apply_state import compute_new_trades
+from sector_prefs_store import load_sector_preferences, save_sector_preferences
+import settings_store
+
+-- Data paths ---------------------------------------------------------------
+DATA_DIR = Path(file).parent / "data"
+SNAPSHOT_PATH = DATA_DIR / "accounts_snapshot.csv"
+CASHFLOW_PATH = DATA_DIR / "cashflow_plan.csv"
+TAX_PROFILE_PATH = DATA_DIR / "tax_profile.json"
+CONSTRAINTS_PATH = DATA_DIR / "constraints.json"
+RMD_DIVISORS_PATH = DATA_DIR / "rmd_divisors.json"
+TRADE_LOG_PATH = DATA_DIR / "trade_log.csv"
+
+def load_json(path):
+with open(path) as f:
+return json.load(f)
+
+def load_csv_rows(path):
+with open(path) as f:
+return list(csv.DictReader(f))
+
+def _show_sector_prefs_summary(prefs=None):
+"""Render a compact read-only summary of sector preferences."""
+try:
+if prefs is None:
+profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+prefs = load_sector_preferences(profile)
+
+    liked_list = prefs.get("liked_sectors", []) or []
+    avoided_list = prefs.get("avoided_sectors", []) or []
+
+    liked = ", ".join(liked_list) if liked_list else "--"
+    avoided = ", ".join(avoided_list) if avoided_list else "--"
+    tilt = prefs.get("tilt_strength", 0)
+
+    st.caption(
+        f"**Sector Preferences** -- Tilt Strength: {tilt} | "
+        f"Liked: {liked} | Avoided: {avoided}"
+    )
+except Exception:
+    st.caption("No preferences set.")
+def _setup_price_sidebar():
+"""Render sidebar controls for price mode and settings. Call once from main()."""
+st.sidebar.subheader("[Radio] Price Mode")
+
+mode = st.session_state.get("price_mode", "Snapshot (CSV prices)")
+api_key = st.session_state.get("finnhub_key", "")
+
+if mode.startswith("Live") and api_key:
+    st.sidebar.markdown("[ON] Live prices active")
+else:
+    st.sidebar.markdown("[OFF] Using saved prices")
+
+with st.sidebar.expander("Settings"):
+    new_key = st.text_input(
+        "Finnhub API key",
+        value=api_key,
+        type="password",
+    )
+    new_mode = st.radio(
+        "Default valuation mode",
+        ("Snapshot (CSV prices)", "Live (Finnhub)"),
+        index=1 if mode.startswith("Live") else 0,
+    )
+    if st.button("Save Settings"):
+        settings_store.set_setting("finnhub_api_key", new_key)
+        settings_store.set_setting("price_mode", "live" if new_mode.startswith("Live") else "disk")
+        st.session_state["finnhub_key"] = new_key
+        st.session_state["price_mode"] = new_mode
+        st.rerun()
+def _setup_holdings_editor():
+"""Render sidebar controls for editing holdings."""
+with st.sidebar.expander("[File] Holdings", expanded=False):
+st.markdown("Edit your portfolio snapshot below.")
+try:
+rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+except Exception as e:
+st.error(f"Failed to load holdings: {e}")
+return
+
+    edited_rows = st.data_editor(
+        rows,
+        num_rows="dynamic",
+        key="holdings_editor",
+        use_container_width=True,
+    )
+
+    if st.button("Save Holdings"):
+        errors = validate_holdings(edited_rows)
+        if errors:
+            for err in errors:
+                st.error(f"* {err}")
+        else:
+            ok, save_errors = save_holdings(SNAPSHOT_PATH, edited_rows, fieldnames)
+            if ok:
+                st.success("Saved successfully!")
+                st.rerun()
+            else:
+                for err in save_errors:
+                    st.error(f"* {err}")
+def _setup_trades_sidebar():
+"""Render sidebar controls for logging trades."""
+with st.sidebar.expander("[Receipt] Trades", expanded=False):
+applied_count = settings_store.get_setting("trades_applied_count", 0)
+try:
+trade_rows, _ = load_trades(TRADE_LOG_PATH)
+except Exception:
+trade_rows = []
+st.caption(f"Applied trades: {applied_count} / {len(trade_rows)}")
+st.markdown("Log a new trade below.")
+with st.form("trade_form", clear_on_submit=True):
+trade_date = st.date_input("Date")
+account_id = st.text_input("Account ID")
+action = st.selectbox("Action", ["buy", "sell", "withdraw"])
+ticker = st.text_input("Ticker")
+shares = st.number_input("Shares", min_value=0.0, step=1.0)
+price = st.number_input("Price", min_value=0.0, step=1.0)
+notes = st.text_input("Notes")
+
+        if st.form_submit_button("Add Trade"):
+            trade = {
+                "trade_date": str(trade_date),
+                "account_id": account_id.strip(),
+                "action": action,
+                "ticker": ticker.strip().upper(),
+                "shares": str(shares),
+                "price": str(price),
+                "total_amount": str(shares * price) if shares and price else "0",
+                "cost_basis_per_share": "",
+                "realized_gain": "",
+                "term": "",
+                "notes": notes.strip()
+            }
+            ok, errors = append_trade(TRADE_LOG_PATH, trade)
+            if ok:
+                st.success("Trade added!")
+                st.rerun()
+            else:
+                for err in errors:
+                    st.error(f"* {err}")
+                    
+    st.markdown("### Recent Trades")
+    try:
+        if trade_rows:
+            rows = trade_rows
+            recent = rows[-5:]
+            recent.reverse()
+            # Handle typed rows returning from ingest gracefully
+            st.dataframe([r.__dict__ if hasattr(r, '__dict__') else r for r in recent], use_container_width=True)
+        else:
+            st.info("No trades found.")
+    except Exception as e:
+        st.error(f"Failed to load trades: {e}")
+    st.markdown("---")
+
+    if st.button("Apply Trades to Snapshot"):
+        try:
+            snap_rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+
+            trade_dicts = [
+                r.__dict__ if hasattr(r, "__dict__") else r
+                for r in trade_rows
+            ]
+
+            new_trades, total_count = compute_new_trades(trade_dicts, applied_count)
+
+            if not new_trades:
+                st.info("No new trades to apply.")
+            else:
+                new_snap, errors = apply_trades_to_snapshot(snap_rows, new_trades)
+
+                if errors:
+                    for e in errors:
+                        st.error(f"* {e}")
+                else:
+                    ok, save_errors = save_holdings(SNAPSHOT_PATH, new_snap, fieldnames)
+                    if ok:
+                        settings_store.set_setting("trades_applied_count", total_count)
+                        st.success("Trades applied successfully!")
+                        st.rerun()
+                    else:
+                        for e in save_errors:
+                            st.error(f"* {e}")
+        except Exception as e:
+            st.error(f"Failed to apply trades: {e}")
+def _setup_profile_editor():
+"""Render sidebar controls for editing user profile."""
+profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+
+with st.sidebar.expander("[User] Profile", expanded=False):
+    st.markdown("Update your key financial details here.")
+    patch = {}
+    
+    if "filing_status" in profile:
+        valid_statuses = ["single", "mfj", "mfs", "hoh", "qw"]
+        current_fs = profile["filing_status"] if profile["filing_status"] in valid_statuses else "single"
+        fs = st.selectbox("Filing status", valid_statuses, index=valid_statuses.index(current_fs))
+        if fs != profile["filing_status"]:
+            patch["filing_status"] = fs
+            
+    if "ages" in profile and isinstance(profile["ages"], list) and len(profile["ages"]) >= 2:
+        col1, col2 = st.columns(2)
+        age1 = col1.number_input("Age (Person 1)", value=int(profile["ages"][0]), step=1)
+        age2 = col2.number_input("Age (Person 2)", value=int(profile["ages"][1]), step=1)
+        if age1 != profile["ages"][0] or age2 != profile["ages"][1]:
+            patch["ages"] = [age1, age2]
+            
+    if "ss_combined_annual" in profile:
+        ss = st.number_input("Annual Social Security", value=float(profile["ss_combined_annual"]), step=1000.0)
+        if ss != profile["ss_combined_annual"]:
+            patch["ss_combined_annual"] = ss
+            
+    if "agi_prior_year" in profile:
+        agi = st.number_input("Prior-year AGI", value=float(profile["agi_prior_year"]), step=1000.0)
+        if agi != profile["agi_prior_year"]:
+            patch["agi_prior_year"] = agi
+            
+    if "rmd_start_age" in profile:
+        rmd = st.number_input("RMD Start Age", value=int(profile["rmd_start_age"]), step=1)
+        if rmd != profile["rmd_start_age"]:
+            patch["rmd_start_age"] = rmd
+            
+    if "aggressiveness_score" in profile and isinstance(profile["aggressiveness_score"], dict) and "current_target" in profile["aggressiveness_score"]:
+        curr_agg = profile["aggressiveness_score"]["current_target"]
+        agg = st.slider("Risk Target (0=Conservative, 100=Aggressive)", 0, 100, int(curr_agg))
+        if agg != curr_agg:
+            new_agg = profile["aggressiveness_score"].copy()
+            new_agg["current_target"] = agg
+            patch["aggressiveness_score"] = new_agg
+            
+    st.markdown("")
+    if st.button("Save Profile"):
+        if patch:
+            merged, errors = save_profile(patch, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+            if errors:
+                for err in errors:
+                    st.error(f"* {err}")
+            else:
+                st.success("Profile saved successfully!")
+                st.rerun()
+        else:
+            st.info("No changes to save.")
+def _setup_sector_prefs_sidebar():
+"""Render sidebar controls for editing sector preferences."""
+profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+prefs = load_sector_preferences(profile)
+
+with st.sidebar.expander("[Tag] Sector Preferences", expanded=False):
+    st.markdown("Set your sector tilts.")
+    liked_str = ", ".join(prefs["liked_sectors"])
+    avoided_str = ", ".join(prefs["avoided_sectors"])
+
+    with st.form("sector_prefs_form"):
+        new_liked = st.text_input("Liked Sectors (comma-separated)", value=liked_str)
+        new_avoided = st.text_input("Avoided Sectors (comma-separated)", value=avoided_str)
+        new_tilt = st.slider("Tilt Strength", 0, 5, int(prefs["tilt_strength"]))
+
+        if st.form_submit_button("Save Preferences"):
+            new_prefs = {
+                "liked_sectors": [x.strip() for x in new_liked.split(",") if x.strip()],
+                "avoided_sectors": [x.strip() for x in new_avoided.split(",") if x.strip()],
+                "tilt_strength": new_tilt,
+            }
+            try:
+                save_sector_preferences(new_prefs, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                st.success("Sector preferences saved!")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+if HAS_STREAMLIT:
+@st.cache_data(ttl=120, show_spinner="Fetching live quotes ...")
+def _cached_quotes(tickers_tuple, api_key):
+"""Cache live quotes for 2 minutes to avoid hammering the API."""
+return fetch_quotes_finnhub(list(tickers_tuple), api_key=api_key)
+else:
+def _cached_quotes(tickers_tuple, api_key):
+return fetch_quotes_finnhub(list(tickers_tuple), api_key=api_key)
+
+def load_holdings_with_mode():
+"""Load holdings, optionally overlaying live prices based on sidebar state.
+
+Returns the same list[dict] shape as load_csv_rows(SNAPSHOT_PATH) so every
+downstream tab is unaffected.
+"""
+holdings = load_csv_rows(SNAPSHOT_PATH)
+
+default_mode = (
+    "Snapshot (CSV prices)"
+    if settings_store.get_setting("price_mode", "disk") == "disk"
+    else "Live (Finnhub)"
+)
+
+mode = st.session_state.get("price_mode", default_mode)
+api_key = st.session_state.get("finnhub_key", "")
+
+if not mode.startswith("Live") or not api_key:
+    return holdings
+
+# Collect unique tickers
+tickers = sorted({h["ticker"] for h in holdings if h.get("ticker")})
+
+try:
+    raw_quotes = _cached_quotes(tuple(tickers), api_key)
+except Exception as exc:
+    st.sidebar.error(f"Quote fetch failed: {exc}")
+    return holdings
+
+# Overlay live prices
+# Convert Finnhub quote objects -> simple ticker->price mapping expected by live_overlay
+price_overrides = {}
+for tkr, payload in (raw_quotes or {}).items():
+    if isinstance(payload, dict):
+        if "price" in payload and payload["price"] is not None:
+            price_overrides[tkr] = payload["price"]
+    else:
+        # Backward-compatible: allow numeric mapping too
+        price_overrides[tkr] = payload
+
+return apply_price_overrides(holdings, price_overrides)
+==============================================================================
+TAB IMPLEMENTATIONS
+==============================================================================
+def tab_your_plan():
+"""Tab 0: New landing page UI (calm, outcome-first)."""
+st.header("Your Plan -- Retirement health at a glance")
+st.write("A simple summary of your retirement plan and three recommended actions.")
+
+holdings = load_holdings_with_mode()
+
+# Load supporting inputs (best-effort; this is a UI summary tab)
+cashflow = []
+recs = []
+try:
+    cashflow = load_csv_rows(CASHFLOW_PATH)
+    tax_profile = load_json(TAX_PROFILE_PATH)
+    constraints = load_json(CONSTRAINTS_PATH)
+    rmd_divisors = load_json(RMD_DIVISORS_PATH)
+    recs = generate_all_recommendations(holdings, tax_profile, constraints, cashflow, rmd_divisors)
+except Exception:
+    pass
+
+# Status badge based on recommendation severity (reassurance framing)
+high_sev = sum(1 for r in recs if getattr(r, "severity", "") == "high")
+med_sev = sum(1 for r in recs if getattr(r, "severity", "") == "medium")
+if high_sev > 0:
+    status_badge = "[!] Action recommended now"
+elif med_sev > 0:
+    status_badge = "[~] Small adjustments recommended"
+else:
+    status_badge = "[OK] Your plan is on track"
+
+st.subheader(status_badge)
+
+# Cashflow summary (used for Income Coverage)
+income_items = [c for c in cashflow if c.get("category") == "income"]
+expense_items = [
+    c for c in cashflow
+    if c.get("category") == "expense" and c.get("frequency") == "annual"
+]
+total_income = sum(float(i.get("amount", 0) or 0) for i in income_items)
+total_exp = sum(float(e.get("amount", 0) or 0) for e in expense_items)
+coverage = (total_income / total_exp) if total_exp > 0 else 0.0
+
+st.subheader("Plan Health Summary")
+surplus = total_income - total_exp
+st.write(
+    "Based on your current cash flow, here is a summary of your expected income and expenses for the year. "
+    "These figures help ensure your day-to-day needs are comfortably met."
+)
+
+with st.expander("Why this status?"):
+    st.write(
+        "This summary is designed to be simple. The status is driven by the highest-priority planning "
+        "flags currently found (if any). You can review details in Recommendations when you're ready."
+    )
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Projected Income", f"${total_income:,.0f}")
+col2.metric("Estimated Expenses", f"${total_exp:,.0f}")
+col3.metric("Surplus / Shortfall", f"${surplus:,.0f}")
+
+st.write(f"**Income Coverage:** Your current income covers {coverage:.2f}x of your estimated annual expenses.")
+
+st.divider()
+st.subheader("Next Steps")
+st.write("We've identified a few areas where you might consider making adjustments. Take these one step at a time.")
+if recs:
+    for idx, rec in enumerate(recs[:3], start=1):
+        title = getattr(rec, "title", f"Recommendation {idx}")
+        desc = getattr(rec, "description", "")
+        impact = getattr(rec, "impact_estimate", "")
+        st.markdown(f"**{idx}. {title}**")
+        if impact:
+            st.caption(impact)
+        if desc:
+            st.write(desc)
+        c1, c2, c3 = st.columns([1.5, 1.5, 6])
+        with c1:
+            st.button("Review", key=f"plan_review_{idx}", type="primary")
+        with c2:
+            st.button("Details", key=f"plan_details_{idx}")
+        with c3:
+            st.write("")
+        st.markdown("<br>", unsafe_allow_html=True)
+else:
+    st.write("No urgent actions required. Your plan is on track.")
+
+st.markdown("**Quick Links**")
+q1, q2, q3, q4 = st.columns(4)
+with q1:
+    if st.button("View portfolio", use_container_width=True):
+        st.session_state["nav_section"] = "My Finances"
+        st.rerun()
+with q2:
+    if st.button("Open cash flow plan", use_container_width=True):
+        st.session_state["nav_section"] = "My Finances"
+        st.rerun()
+with q3:
+    if st.button("Tax details", use_container_width=True):
+        st.session_state["nav_section"] = "More Details"
+        st.rerun()
+with q4:
+    if st.button("Advanced tools", use_container_width=True):
+        st.session_state["nav_section"] = "More Details"
+        st.rerun()
+def _show_sector_exposure_panel(prefs=None):
+"""Render a panel showing current sector exposure and matching preferences."""
+with st.expander("Sector Exposure (Top 10)", expanded=False):
+try:
+holdings = load_holdings_with_mode()
+if not holdings:
+st.info("No holdings found.")
+return
+
+        if prefs is None:
+            try:
+                profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+                prefs = load_sector_preferences(profile)
+            except Exception:
+                prefs = {"liked_sectors": [], "avoided_sectors": []}
+
+        liked = [s.strip().lower() for s in prefs.get("liked_sectors", [])]
+        avoided = [s.strip().lower() for s in prefs.get("avoided_sectors", [])]
+
+        sectors = {}
+        total_value = 0.0
+        for h in holdings:
+            sec_raw = h.get("sector", "Unknown")
+            sec = str(sec_raw).strip().title() if sec_raw else "Unknown"
+            try:
+                mv = float(h.get("market_value") or 0.0)
+            except ValueError:
+                mv = 0.0
+            sectors[sec] = sectors.get(sec, 0.0) + mv
+            total_value += mv
+
+        if total_value <= 0:
+            st.info("Total portfolio value is zero.")
+            return
+
+        sorted_sectors = sorted(sectors.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        data = []
+        chart_data = {}
+        for sec, val in sorted_sectors:
+            pct = val / total_value
+            sec_lower = sec.lower()
+            tag = "Ambient"
+            if sec_lower in liked:
+                tag = "Liked"
+            elif sec_lower in avoided:
+                tag = "Avoided"
+
+            data.append({"Sector": sec, "Value": f"${val:,.0f}", "Pct": f"{pct:.1%}", "Tag": tag})
+            chart_data[sec] = pct * 100
+
+        st.dataframe(data, use_container_width=True)
+        st.bar_chart(chart_data)
+    except Exception as e:
+        st.caption(f"Could not load sector exposure: {e}")
+def tab_portfolio_overview():
+"""Tab 1: Portfolio snapshot summary."""
+st.header("Portfolio Overview")
+holdings = load_holdings_with_mode()
+
+# Account totals
+accounts = {}
+for h in holdings:
+    acct = h["account_label"]
+    mv = float(h["market_value"])
+    accounts.setdefault(acct, {"type": h["account_type"], "value": 0, "positions": 0})
+    accounts[acct]["value"] += mv
+    accounts[acct]["positions"] += 1
+
+total_portfolio = sum(a["value"] for a in accounts.values())
+st.metric("Total Portfolio Value", f"${total_portfolio:,.0f}")
+
+cols = st.columns(len(accounts))
+for col, (name, info) in zip(cols, accounts.items()):
+    col.metric(name, f"${info['value']:,.0f}",
+               delta=f"{info['value']/total_portfolio:.1%} of total")
+
+# Allocation pie
+st.subheader("Asset Allocation")
+alloc = compute_current_allocation(holdings)
+alloc_data = [{"Asset Class": k.replace("_", " ").title(), "Pct": round(v * 100, 1)}
+              for k, v in alloc.items()]
+st.bar_chart(data={d["Asset Class"]: d["Pct"] for d in alloc_data})
+
+# Holdings table
+st.subheader("All Holdings")
+display_cols = ["account_label", "ticker", "asset_class", "shares", "price",
+                "market_value", "unrealized_gain", "annual_income_est"]
+table_data = [{c: h.get(c, "") for c in display_cols} for h in holdings]
+st.dataframe(table_data, use_container_width=True)
+def tab_cashflow():
+"""Tab 2: Cash flow plan."""
+st.header("Cash Flow Plan")
+cashflow = load_csv_rows(CASHFLOW_PATH)
+
+income = [c for c in cashflow if c["category"] == "income"]
+expenses = [c for c in cashflow if c["category"] == "expense"]
+
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("Income Sources")
+    for item in income:
+        st.write(f"**{item['subcategory']}**: ${float(item['amount']):,.0f}/yr")
+    total_income = sum(float(i["amount"]) for i in income)
+    st.metric("Total Annual Income", f"${total_income:,.0f}")
+
+with col2:
+    st.subheader("Annual Expenses")
+    annual_exp = [e for e in expenses if e.get("frequency") == "annual"]
+    for item in annual_exp:
+        st.write(f"**{item['subcategory']}**: ${float(item['amount']):,.0f}/yr")
+    total_exp = sum(float(e["amount"]) for e in annual_exp)
+    st.metric("Total Annual Expenses", f"${total_exp:,.0f}")
+
+st.subheader("Lumpy / One-Time Expenses")
+lumpy = [e for e in expenses if "one_time" in e.get("frequency", "")]
+for item in lumpy:
+    st.write(f"**{item['year']} - {item['subcategory']}**: ${float(item['amount']):,.0f}")
+def tab_tax_dashboard():
+"""Tab 3: Tax profile summary."""
+st.header("Tax Dashboard")
+tp = load_json(TAX_PROFILE_PATH)
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Filing Status", tp["filing_status"].upper())
+col2.metric("Ages", f"{tp['ages'][0]} / {tp['ages'][1]}")
+col3.metric("Social Security", f"${tp['ss_combined_annual']:,.0f}/yr")
+
+st.subheader("Standard Deduction")
+st.write(f"Base: ${tp['standard_deduction_base']:,.0f} + "
+         f"Senior bonus: 2 x ${tp['standard_deduction_senior_bonus_each']:,.0f} = "
+         f"**${tp['effective_standard_deduction']:,.0f}**")
+
+st.subheader("Federal Brackets (MFJ 2025)")
+bracket_data = []
+for b in tp["federal_brackets_mfj_2025"]:
+    upper = f"${b['upper']:,.0f}" if b['upper'] else "infinity"
+    bracket_data.append({
+        "Range": f"${b['lower']:,.0f} - {upper}",
+        "Rate": f"{b['rate']:.0%}"
+    })
+st.table(bracket_data)
+
+st.subheader("IRMAA Thresholds (MFJ 2025)")
+irmaa_data = []
+for tier in tp["irmaa_thresholds_mfj_2025"]:
+    upper = f"${tier['magi_upper']:,.0f}" if tier['magi_upper'] else "infinity"
+    irmaa_data.append({
+        "MAGI Range": f"${tier['magi_lower']:,.0f} - {upper}",
+        "Part B Surcharge": f"${tier['part_b_surcharge']:,.0f}",
+        "Part D Surcharge": f"${tier['part_d_surcharge']:,.0f}",
+    })
+st.table(irmaa_data)
+def tab_broker_import():
+"""Tab 4: Broker CSV import and normalization."""
+st.header("Broker Import")
+st.write("Upload a CSV export from Fidelity, Schwab, Vanguard, or any broker "
+"and normalize it into the RICS format.")
+
+uploaded = st.file_uploader("Upload broker CSV", type=["csv", "txt"])
+broker = st.selectbox("Broker format", ["auto", "fidelity", "schwab", "vanguard", "generic"])
+snapshot_date = st.date_input("Snapshot date")
+acct_type_override = st.selectbox(
+    "Account type override (optional)",
+    [None, "taxable", "trad_ira", "roth_ira", "inherited_ira"],
+)
+
+if uploaded is not None:
+    csv_text = uploaded.read().decode("utf-8")
+    rows = parse_broker_csv(
+        csv_text,
+        broker=broker,
+        snapshot_date=str(snapshot_date),
+        account_type_override=acct_type_override,
+    )
+
+    st.success(f"Parsed {len(rows)} holdings")
+
+    if rows:
+        st.subheader("Imported Holdings")
+        display = [r.to_dict() for r in rows]
+        st.dataframe(display, use_container_width=True)
+
+        # Merge option
+        if st.button("Merge into current snapshot"):
+            existing = load_accounts_snapshot(str(SNAPSHOT_PATH))
+            merged = merge_holdings(existing, rows)
+            csv_out = holdings_to_csv(merged)
+            st.download_button(
+                "Download merged snapshot CSV",
+                csv_out,
+                file_name="accounts_snapshot_merged.csv",
+                mime="text/csv",
+            )
+            st.info(f"Merged: {len(merged)} total holdings "
+                    f"({len(rows)} imported, {len(existing)} existing)")
+
+        # Standalone download
+        csv_out = holdings_to_csv(rows)
+        st.download_button(
+            "Download imported holdings CSV",
+            csv_out,
+            file_name="broker_import.csv",
+            mime="text/csv",
+        )
+def tab_dividend_analysis():
+"""Tab 5: Dividend income analysis and projections."""
+st.header("Dividend Analysis")
+holdings = load_holdings_with_mode()
+constraints = load_json(CONSTRAINTS_PATH)
+
+try:
+    profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+    prefs = load_sector_preferences(profile)
+except Exception:
+    prefs = None
+
+_show_sector_prefs_summary(prefs)
+_show_sector_exposure_panel(prefs)
+
+st.write("Actionable planning opportunities based on your complete financial picture.")
+
+annual_expenses = st.number_input("Annual expenses for coverage ratio",
+                                   value=90000, step=5000)
+result = analyze_holdings(holdings, annual_expenses=annual_expenses)
+
+# Summary metrics
+col1, col2, col3, col4 = st.columns(4)
+total_annual = getattr(result, "total_annual_income", 0.0) or 0.0
+wavg_yield = getattr(result, "weighted_avg_yield", 0.0) or 0.0
+cov_ratio = getattr(result, "income_coverage_ratio", 0.0) or 0.0
+proj_5y = getattr(result, "projected_5y_income", 0.0) or 0.0
+
+col1.metric("Total Annual Income", f"${total_annual:,.0f}")
+col2.metric("Weighted Avg Yield", f"{wavg_yield:.2%}")
+col3.metric("Income Coverage", f"{cov_ratio:.1%}")
+col4.metric("5-Year Projected", f"${proj_5y:,.0f}")
+
+# Income by tax treatment
+st.subheader("Income by Tax Treatment")
+taxable_qual = getattr(result, "taxable_qualified_income", 0.0) or 0.0
+taxable_ord = getattr(result, "taxable_ordinary_income", 0.0) or 0.0
+tax_def = getattr(result, "tax_deferred_income", 0.0) or 0.0
+tax_free = getattr(result, "tax_free_income", 0.0) or 0.0
+
+tax_data = {
+    "Taxable - Qualified": taxable_qual,
+    "Taxable - Ordinary": taxable_ord,
+    "Tax-Deferred (IRA)": tax_def,
+    "Tax-Free (Roth)": tax_free,
+}
+st.bar_chart(tax_data)
+
+# Holdings detail
+st.subheader("Holding-Level Income")
+detail = []
+for h in getattr(result, "holdings", []):
+    detail.append({
+        "Account": getattr(h, "account_id", ""),
+        "Ticker": getattr(h, "ticker", ""),
+        "Value": f"${getattr(h, 'market_value', 0.0):,.0f}",
+        "Yield": f"{getattr(h, 'current_yield', 0.0):.2%}",
+        "Income": f"${getattr(h, 'annual_income', 0.0):,.0f}",
+        "5Y Proj": f"${getattr(h, 'projected_income_5y', 0.0):,.0f}",
+        "10Y Proj": f"${getattr(h, 'projected_income_10y', 0.0):,.0f}",
+        "Tax Treatment": getattr(h, "tax_treatment", ""),
+    })
+st.dataframe(detail, use_container_width=True)
+
+# Upgrade opportunities
+st.subheader("Dividend Upgrade Opportunities")
+opps = find_upgrade_opportunities(holdings, constraints)
+if opps:
+    for opp in opps[:10]:
+        feasible = getattr(opp, "feasible", False)
+        icon = "[Y]" if feasible else "[!]"
+        curr_tick = getattr(opp, "current_ticker", "")
+        curr_y = getattr(opp, "current_yield", 0.0)
+        sugg_tick = getattr(opp, "suggested_ticker", "")
+        sugg_y = getattr(opp, "suggested_yield", 0.0)
+        inc = getattr(opp, "income_increase", 0.0)
+        rat = getattr(opp, "rationale", "")
+
+        st.write(
+            f"{icon} **{curr_tick}** ({curr_y:.2%}) -> "
+            f"**{sugg_tick}** ({sugg_y:.2%}) | "
+            f"+${inc:,.0f}/yr | _{rat}_"
+        )
+else:
+    st.info("No upgrade opportunities found.")
+def tab_rebalance_simulator():
+"""Tab 6: Rebalance simulator with what-if scenarios."""
+st.header("Rebalance Simulator")
+
+holdings = load_holdings_with_mode()
+constraints = load_json(CONSTRAINTS_PATH)
+
+
+try:
+    profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+    prefs = load_sector_preferences(profile)
+except Exception:
+    prefs = None
+# Controls
+st.subheader("Target Allocation")
+score = st.slider("Aggressiveness Score (0=conservative, 100=aggressive)",
+                   0, 100, 45)
+auto_target = score_to_allocation(score)
+
+col1, col2, col3, col4 = st.columns(4)
+us_eq = col1.number_input("US Equity %", 0, 100, int(auto_target.us_equity * 100))
+intl_eq = col2.number_input("Intl Equity %", 0, 100, int(auto_target.intl_equity * 100))
+bonds = col3.number_input("US Bonds %", 0, 100, int(auto_target.us_bond * 100))
+cash = col4.number_input("Cash/MMF %", 0, 100, int(auto_target.mmf * 100))
+
+target = AllocationTarget(us_eq / 100, intl_eq / 100, bonds / 100, cash / 100)
+if not target.validate():
+    st.warning(f"Allocations sum to {us_eq + intl_eq + bonds + cash}% (should be 100%)")
+
+band = st.slider("Rebalance band tolerance", 0.01, 0.20, 0.05, 0.01)
+
+if st.button("Run Simulation") or True:  # Auto-run
+    result = simulate_rebalance(
+        holdings,
+        target,
+        constraints=constraints,
+        rebalance_band=band,
+        sector_prefs=prefs,
+    )
+
+    # Summary
+    st.subheader("Results")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Portfolio Value", f"${result.total_portfolio_value:,.0f}")
+    col2.metric("Estimated Tax Cost", f"${result.total_tax_cost:,.0f}")
+    col3.metric("Turnover", f"{result.net_turnover_pct:.1%}")
+
+    # Drift
+    st.subheader("Current vs Target Allocation")
+    drift_data = []
+    for ac in ["us_equity", "intl_equity", "us_bond", "mmf"]:
+        drift_data.append({
+            "Asset Class": ac.replace("_", " ").title(),
+            "Current": f"{result.current_allocation.get(ac, 0):.1%}",
+            "Target": f"{result.target_allocation.get(ac, 0):.1%}",
+            "Drift": f"{result.drift.get(ac, 0):+.1%}",
+        })
+    st.table(drift_data)
+
+    # Proposed trades
+    if result.trades:
+        st.subheader(f"Proposed Trades ({len(result.trades)})")
+        trades_display = []
+        for t in result.trades:
+            trades_display.append({
+                "Account": t.account_id,
+                "Type": t.account_type,
+                "Action": t.action.upper(),
+                "Ticker": t.ticker,
+                "Shares": f"{t.shares:,.1f}",
+                "Value": f"${t.trade_value:,.0f}",
+                "Est. Tax": f"${t.estimated_tax:,.0f}",
+                "Rationale": t.rationale,
+            })
+        st.dataframe(trades_display, use_container_width=True)
+
+    # Blocked trades
+    if result.blocked_trades:
+        st.subheader(f"Blocked Trades ({len(result.blocked_trades)})")
+        for t in result.blocked_trades:
+            st.warning(f"**{t.ticker}** ({t.account_id}): {t.block_reason}")
+def tab_recommendations():
+"""Tab 7: Rule-based recommendations engine."""
+st.header("Recommendations")
+tax_profile = load_json(TAX_PROFILE_PATH)
+constraints = load_json(CONSTRAINTS_PATH)
+cashflow = load_csv_rows(CASHFLOW_PATH)
+rmd_divisors = load_json(RMD_DIVISORS_PATH)
+
+holdings = load_holdings_with_mode()
+recs = generate_all_recommendations(
+    holdings,
+    tax_profile,
+    constraints,
+    cashflow,
+    rmd_divisors,
+)
+
+if not recs:
+    st.success("No actionable recommendations at this time.")
+    return
+
+# Severity legend
+severity_icons = {"high": "[!]", "medium": "[~]", "low": "[OK]", "info": "[i]"}
+category_icons = {
+    "tax": "[$]", "risk": "[!]", "income": "[+]",
+    "withdrawal": "[W]", "compliance": "[C]", "info": "[i]",
+}
+
+st.write(f"**{len(recs)} recommendations found** -- sorted by priority")
+
+for rec in recs:
+    sev_icon = severity_icons.get(rec.severity, "[?]")
+    cat_icon = category_icons.get(rec.category, "")
+    with st.expander(f"{sev_icon} {cat_icon} **{rec.title}** -- _{rec.impact_estimate}_",
+                      expanded=(rec.severity in ("high", "medium"))):
+        st.write(rec.description)
+        st.write(f"**Suggested Action:** {rec.action}")
+
+        # Show key data points
+        if rec.data:
+            with st.container():
+                st.caption("Supporting Data")
+                # Show top-level numeric data
+                data_items = {k: v for k, v in rec.data.items()
+                               if isinstance(v, (int, float, str)) and k != "error"}
+                if data_items:
+                    data_cols = st.columns(min(4, len(data_items)))
+                    for col, (k, v) in zip(data_cols, list(data_items.items())[:4]):
+                        label = k.replace("_", " ").title()
+                        if isinstance(v, float) and v > 100:
+                            col.metric(label, f"${v:,.0f}")
+                        elif isinstance(v, float) and v <= 1:
+                            col.metric(label, f"{v:.1%}")
+                        else:
+                            col.metric(label, str(v))
+
+# Export
+recs_json = json.dumps([r.to_dict() for r in recs], indent=2)
+st.download_button("Download Recommendations (JSON)", recs_json,
+                   file_name="rics_recommendations.json", mime="application/json")
+==============================================================================
+MAIN
+==============================================================================
+def run_baseline():
+"""Minimal callable entrypoint to run a baseline scenario."""
+print("--- RICS Baseline Scenario ---")
+try:
+holdings = load_csv_rows(SNAPSHOT_PATH)
+constraints = load_json(CONSTRAINTS_PATH)
+total_val = sum(float(h.get("market_value", 0)) for h in holdings)
+print(f"Loaded {len(holdings)} holdings from {SNAPSHOT_PATH.name}")
+print(f"Total Portfolio Value: ${total_val:,.2f}")
+print(f"Loaded {len(constraints)} constraints from {CONSTRAINTS_PATH.name}")
+print("Baseline scenario executed successfully.")
+except Exception as e:
+print(f"Baseline scenario failed: {e}")
+sys.exit(1)
+
+def main():
+if len(sys.argv) > 1 and sys.argv[1] == "--baseline":
+run_baseline()
+return
+
+if not HAS_STREAMLIT:
+    print("Streamlit not installed. Install with: pip install streamlit")
+    print("Running quick self-test instead...\n")
+
+    # Self-test mode: run recommendations engine and print summary
+    recs = generate_recommendations_from_files(
+        str(SNAPSHOT_PATH), str(TAX_PROFILE_PATH), str(CONSTRAINTS_PATH),
+        str(CASHFLOW_PATH), str(RMD_DIVISORS_PATH),
+    )
+    print(f"RICS Recommendations Engine -- {len(recs)} findings:\n")
+    for rec in recs:
+        print(f"  [{rec.severity.upper():6s}] {rec.title}")
+        print(f"           {rec.impact_estimate}")
+        print()
+    sys.exit(1)
+
+st.set_page_config(
+    page_title="RICS - Retirement Income & Cash-flow Simulator",
+    page_icon="[Chart]",
+    layout="wide",
+)
+
+# -- Initialize State from Settings -------------------------------------------
+if "finnhub_key" not in st.session_state:
+    stored_key = settings_store.get_setting("finnhub_api_key", "")
+    st.session_state["finnhub_key"] = os.environ.get("FINNHUB_API_KEY", stored_key)
+if "price_mode" not in st.session_state:
+    saved_mode = settings_store.get_setting("price_mode", "disk")
+    st.session_state["price_mode"] = "Live (Finnhub)" if saved_mode == "live" else "Snapshot (CSV prices)"
+if "onboarding_dismissed" not in st.session_state:
+    st.session_state["onboarding_dismissed"] = bool(settings_store.get_setting("finnhub_api_key", ""))
+
+# -- First-Run Onboarding Wizard ----------------------------------------------
+if not st.session_state["onboarding_dismissed"]:
+    st.title("Enable live prices")
+    st.write("To show live prices, paste your Finnhub API key. You only need to do this once.")
+    new_key = st.text_input("Finnhub API key", type="password", key="onboard_key")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save and enable live prices"):
+            settings_store.set_setting("finnhub_api_key", new_key)
+            settings_store.set_setting("price_mode", "live")
+            st.session_state["finnhub_key"] = new_key
+            st.session_state["price_mode"] = "Live (Finnhub)"
+            st.session_state["onboarding_dismissed"] = True
+            st.rerun()
+    with col2:
+        if st.button("Skip for now"):
+            settings_store.set_setting("price_mode", "disk")
+            st.session_state["price_mode"] = "Snapshot (CSV prices)"
+            st.session_state["onboarding_dismissed"] = True
+            st.rerun()
+    return  # Block the rest of the app until interaction is completed
+
+# Main App Title
+st.title("[Chart] RICS - Retirement Income & Cash-flow Simulator")
+
+# [OK] Sidebar: Advanced tools live here, collapsed by default
+with st.sidebar.expander("Advanced / Admin", expanded=False):
+    _setup_price_sidebar()
+    st.divider()
+    _setup_holdings_editor()
+    st.divider()
+    _setup_profile_editor()
+    st.divider()
+    _setup_sector_prefs_sidebar()
+    st.divider()
+    _setup_trades_sidebar()
+
+# -- Primary Navigation -------------------------------------
+if "nav_section" not in st.session_state:
+    st.session_state["nav_section"] = "Today's Summary"
+
+section = st.sidebar.radio(
+    "Navigate",
+    ["Today's Summary", "My Finances", "More Details"],
+    key="nav_section"
+)
+
+# -- Section Routing -----------------------------------------
+if section == "Today's Summary":
+    st.caption("You're viewing: Today's Summary")
+    tab_your_plan()
+
+elif section == "My Finances":
+    st.caption("You're viewing: My Finances")
+    st.header("Your Portfolio")
+
+    st.subheader("Portfolio Overview")
+    tab_portfolio_overview()
+    st.divider()
+
+    st.subheader("Cash Flow Plan")
+    tab_cashflow()
+    st.divider()
+
+    with st.expander("Rebalance Simulator", expanded=False):
+        tab_rebalance_simulator()
+
+    with st.expander("Dividend Analysis", expanded=False):
+        tab_dividend_analysis()
+
+elif section == "More Details":
+    st.caption("You're viewing: More Details")
+    st.header("Details & Tools")
+    st.write("Open these only if you need them.")
+
+    with st.expander("Tax Dashboard", expanded=True):
+        tab_tax_dashboard()
+
+    with st.expander("Broker Import", expanded=False):
+        tab_broker_import()
+
+    with st.expander("Recommendations", expanded=False):
+        tab_recommendations()
+if name == "main":
+main()

@@ -1,10 +1,23 @@
+"""
+rebalance_sim.py – RICS Module: Rebalance Simulator
+
+Simulates portfolio rebalancing scenarios considering:
+- Target asset allocation (aggressiveness score → equity/bond/cash split)
+- Tax impact of trades in taxable accounts
+- Concentration limits (e.g., AAPL position)
+- Account-level constraints (IRA rebalances are tax-free)
+- Rebalance band tolerance to reduce unnecessary trading
+"""
+
 import csv
 import json
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+
 @dataclass
 class AllocationTarget:
+    """Target allocation percentages."""
     us_equity: float = 0.30
     intl_equity: float = 0.10
     us_bond: float = 0.35
@@ -17,17 +30,19 @@ class AllocationTarget:
     def to_dict(self) -> dict:
         return asdict(self)
 
+
 @dataclass
 class TradeProposal:
+    """A proposed rebalancing trade."""
     account_id: str
     account_type: str
     ticker: str
     asset_class: str
-    action: str 
+    action: str  # "buy" or "sell"
     shares: float
     estimated_price: float
     trade_value: float
-    estimated_tax: float
+    estimated_tax: float  # 0 for IRA/Roth trades
     embedded_gain: float
     rationale: str
     blocked: bool = False
@@ -36,11 +51,13 @@ class TradeProposal:
     def to_dict(self) -> dict:
         return asdict(self)
 
+
 @dataclass
 class RebalanceResult:
+    """Complete rebalance simulation output."""
     current_allocation: dict
     target_allocation: dict
-    drift: dict 
+    drift: dict  # asset_class → drift pct
     total_portfolio_value: float
     trades: list[TradeProposal]
     total_tax_cost: float
@@ -50,16 +67,24 @@ class RebalanceResult:
     blocked_trades: list[TradeProposal]
     summary: str
 
+
 def score_to_allocation(aggressiveness: int) -> AllocationTarget:
+    """
+    Convert 0-100 aggressiveness score to target allocation.
+
+    0   → 0% equity, 50% bonds, 50% MMF
+    45  → 36% us_eq, 9% intl_eq, 35% bonds, 20% MMF
+    100 → 75% us_eq, 20% intl_eq, 5% bonds, 0% MMF
+    """
     score = max(0, min(100, aggressiveness))
-    equity_pct = score / 100 * 0.95 
-    us_eq = round(equity_pct * 0.80, 4)  
+
+    equity_pct = score / 100 * 0.95  # max 95% equity at score=100
+    us_eq = round(equity_pct * 0.80, 4)  # 80/20 US/intl split
     intl_eq = round(equity_pct * 0.20, 4)
 
     remaining = 1.0 - us_eq - intl_eq
-    # FIX: Correctly maps Score 0 to a 50/50 split of the remaining pie
-    cash_weight = 0.5 * (1 - score / 100)
-    cash_pct = max(0.0, round(remaining * cash_weight, 4))
+    # More aggressive → less cash
+    cash_pct = max(0.0, round(remaining * (1 - score / 200), 4))
     bond_pct = round(remaining - cash_pct, 4)
 
     return AllocationTarget(
@@ -69,7 +94,9 @@ def score_to_allocation(aggressiveness: int) -> AllocationTarget:
         mmf=cash_pct,
     )
 
+
 def compute_current_allocation(holdings: list[dict]) -> dict:
+    """Compute current allocation percentages by asset class."""
     totals = {"us_equity": 0, "intl_equity": 0, "us_bond": 0, "mmf": 0}
     for h in holdings:
         ac = h.get("asset_class", "us_equity")
@@ -77,16 +104,20 @@ def compute_current_allocation(holdings: list[dict]) -> dict:
         if ac in totals:
             totals[ac] += mv
         else:
-            totals["us_equity"] += mv  
+            totals["us_equity"] += mv  # Unknown → equity
 
     grand = sum(totals.values())
     if grand == 0:
         return {k: 0.0 for k in totals}
     return {k: round(v / grand, 4) for k, v in totals.items()}
 
+
 def compute_drift(current: dict, target: dict) -> dict:
+    """Compute allocation drift (current - target) by asset class."""
     all_keys = set(list(current.keys()) + list(target.keys()))
     return {k: round(current.get(k, 0) - target.get(k, 0), 4) for k in all_keys}
+
+
 
 def _apply_sector_tilt_to_target(target: AllocationTarget, holdings: list[dict], sector_prefs: Optional[dict]) -> AllocationTarget:
     if not sector_prefs or not sector_prefs.get("tilt_strength"):
@@ -137,6 +168,24 @@ def simulate_rebalance(
     tax_rates: Optional[dict] = None,
     sector_prefs: Optional[dict] = None,
 ) -> RebalanceResult:
+    """
+    Simulate rebalancing and generate trade proposals.
+
+    Parameters
+    ----------
+    holdings : list[dict]
+        Portfolio holdings from accounts_snapshot
+    target : AllocationTarget
+        Target allocation percentages
+    constraints : dict, optional
+        Concentration limits and other constraints
+    rebalance_band : float
+        Tolerance band — don't trade if drift < band
+    tax_rates : dict, optional
+        Tax rates for gain estimation: {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
+    sector_prefs : dict, optional
+        Sector preferences mapping e.g. {"liked_sectors": [...], "avoided_sectors": [...], "tilt_strength": 3}
+    """
     constr = constraints or {}
     rates = tax_rates or {"ltcg": 0.15, "stcg": 0.22, "state": 0.0875}
     aapl_flag = constr.get("concentration_limits", {}).get("aapl_flag", {})
@@ -144,23 +193,14 @@ def simulate_rebalance(
 
     target_dict = target.to_dict()
     current = compute_current_allocation(holdings)
-
-    total_value = sum(float(h.get("market_value", 0)) for h in holdings)
-
-    curr_unrounded = {}
-    if total_value > 0:
-        ac_mv = {}
-        for h in holdings:
-            ac = h.get("asset_class", "us_equity")
-            ac_mv[ac] = ac_mv.get(ac, 0.0) + float(h.get("market_value", 0))
-        curr_unrounded = {k: v / total_value for k, v in ac_mv.items()}
-    all_keys = sorted(list(set(list(current.keys()) + list(target_dict.keys()))))
-    drift_raw = {k: (curr_unrounded.get(k, 0.0) - target_dict.get(k, 0.0)) for k in all_keys}
+    drift_raw = {k: (current.get(k, 0.0) - target_dict.get(k, 0.0)) for k in set(list(current.keys()) + list(target_dict.keys()))}
     drift = compute_drift(current, target_dict)
+    total_value = sum(float(h.get("market_value", 0)) for h in holdings)
 
     trades = []
     blocked = []
 
+    # Aggregate by (account_type, asset_class) for smarter trading
     acct_class_holdings = {}
     for h in holdings:
         key = (h.get("account_type", ""), h.get("asset_class", ""))
@@ -168,14 +208,14 @@ def simulate_rebalance(
             acct_class_holdings[key] = []
         acct_class_holdings[key].append(h)
 
-    has_tilt = bool(sector_prefs and sector_prefs.get("tilt_strength", 0) > 0)
-
     for asset_class, drift_pct in drift_raw.items():
-        if abs(drift_pct) < rebalance_band and not has_tilt:
-            continue  
+        if abs(drift_pct) < rebalance_band:
+            continue  # Within tolerance
 
         trade_amount = abs(drift_pct * total_value)
         action = "sell" if drift_pct > 0 else "buy"
+
+        # Prefer to trade in tax-advantaged accounts first
         acct_priority = ["roth_ira", "trad_ira", "inherited_ira", "taxable"]
 
         remaining = trade_amount
@@ -185,19 +225,6 @@ def simulate_rebalance(
 
             key = (acct_type, asset_class)
             acct_holdings = acct_class_holdings.get(key, [])
-            
-            # FIX: Create a dummy holding to buy if we own nothing in this asset class
-            if not acct_holdings and action == "buy":
-                default_tickers = {"us_equity": "VTI", "intl_equity": "VXUS", "us_bond": "BND", "mmf": "CASH"}
-                acct_holdings = [{
-                    "account_id": f"Rebalance_{acct_type}",
-                    "account_type": acct_type,
-                    "ticker": default_tickers.get(asset_class, "NEW"),
-                    "market_value": 0.0,
-                    "price": 100.0,
-                    "unrealized_gain": 0.0
-                }]
-            
             if sector_prefs and sector_prefs.get("tilt_strength", 0) > 0:
                 tilt = sector_prefs.get("tilt_strength", 0)
                 liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
@@ -205,13 +232,8 @@ def simulate_rebalance(
 
                 def sort_key(h):
                     sector = str(h.get("sector", "")).strip().lower()
-                    if action == "sell":
-                        if sector in avoided: return -tilt
-                        if sector in liked: return tilt
-                        return 0
-                    if sector in liked: return -tilt
-                    if sector in avoided: return tilt
-                    return 0
+                    s = tilt if sector in liked else (-tilt if sector in avoided else 0)
+                    return s if action == "sell" else -s
 
                 acct_holdings = sorted(acct_holdings, key=sort_key)
 
@@ -225,16 +247,20 @@ def simulate_rebalance(
                 unrealized = float(h.get("unrealized_gain", 0))
 
                 if action == "sell":
-                    sell_amount = min(remaining, mv * 0.9)  
+                    sell_amount = min(remaining, mv * 0.9)  # Don't liquidate fully
                 else:
+                    # For buys, use cash from same account or cross-fund
                     sell_amount = min(remaining, trade_amount)
 
                 shares_to_trade = round(sell_amount / price, 2) if price > 0 else 0
+
+                # Tax estimate
                 tax_est = 0.0
                 if acct_type == "taxable" and action == "sell" and unrealized > 0:
                     gain_realized = unrealized * (sell_amount / mv) if mv > 0 else 0
                     tax_est = round(gain_realized * (rates["ltcg"] + rates["state"]), 2)
 
+                # Check concentration constraints
                 is_blocked = False
                 block_reason = ""
 
@@ -266,10 +292,13 @@ def simulate_rebalance(
 
                 remaining -= sell_amount
 
+    # Post-sort trades to respect sector preferences across the full proposal set
+    # (Tests expect avoided sectors sold first, liked sectors bought first, liked sectors sold last.)
     if sector_prefs and sector_prefs.get("tilt_strength", 0) > 0 and trades:
         liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
         avoided = {str(x).strip().lower() for x in sector_prefs.get("avoided_sectors", []) if str(x).strip()}
 
+        # Map ticker -> sector from holdings (best effort)
         ticker_to_sector = {}
         for h in holdings:
             tkr = str(h.get("ticker", "")).strip().upper()
@@ -281,18 +310,28 @@ def simulate_rebalance(
             tkr = str(getattr(trade, "ticker", "")).strip().upper()
             sec = ticker_to_sector.get(tkr, "")
             act = getattr(trade, "action", "")
+
+            # Keep CASH/MMF late but not last for sells; never preferred for buys
             if tkr in {"CASH", "MMF"}:
                 return 2
+
             if act == "sell":
-                if sec in avoided: return 0
-                if sec in liked: return 3
+                # avoided sold first, liked sold last
+                if sec in avoided:
+                    return 0
+                if sec in liked:
+                    return 3
                 return 1
             else:
-                if sec in liked: return 0
-                if sec in avoided: return 3
+                # buy: liked first, avoided last
+                if sec in liked:
+                    return 0
+                if sec in avoided:
+                    return 2
                 return 1
-                
-        trades.sort(key=lambda t: (_sector_rank(t), 0 if getattr(t, "action", "") == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
+
+        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first
+        trades.sort(key=lambda t: (_sector_rank(t), 0 if t.action == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
 
     total_tax = sum(t.estimated_tax for t in trades)
     tax_free_val = sum(t.trade_value for t in trades if t.account_type != "taxable")
@@ -320,6 +359,8 @@ def simulate_rebalance(
         summary=" | ".join(summary_parts),
     )
 
+
 def load_holdings_from_csv(csv_path: str) -> list[dict]:
+    """Load holdings from accounts_snapshot CSV."""
     with open(csv_path) as f:
         return list(csv.DictReader(f))

@@ -12,11 +12,7 @@ import sys
 
 from plan_engine import run_plan
 from monte_carlo import run_monte_carlo
-try:
-    from advisor_actions import evaluate_actions
-except ImportError:
-    evaluate_actions = None
-from recommendations import recommend_rebalance
+from advisor_actions import evaluate_actions
 
 
 def load_csv_rows(path: Path):
@@ -88,14 +84,6 @@ def run_baseline():
     for k, v in plan_result.get("plan_summary", {}).items():
         print(f"  {k}: {v}")
 
-    spending_policy = constraints.get("spending_policy", {})
-    if spending_policy.get("enabled"):
-        print("\n--- Spending Policy (First 5 Years) ---")
-        for yr in plan_result.get("timeline", [])[:5]:
-            cf = yr["cashflow"]
-            print(f"  Year {yr['year']}: Spending ${cf['adjusted_spending']:,.2f} | "
-                  f"Ratio: {cf['funding_ratio']:.2f} | Action: {cf['policy_action']}")
-
     
     print("\n--- Monte Carlo Summary ---")
     try:
@@ -107,34 +95,13 @@ def run_baseline():
             print(f"    {p}: ${val:,.2f}")
             
         print("\n--- Advisor Actions (Top 3) ---")
-        if evaluate_actions:
-            actions = evaluate_actions(profile, holdings, constraints)
-            for i, act in enumerate(actions[:3], 1):
-                print(f"  {i}. {act['name']}")
-                print(f"     Score:          {act['score']:+.2f}")
-                print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
-                print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
-                print(f"     IRMAA Warn Yrs Δ: {act['delta_avg_irmaa_warning_years']:+.2f}")
-        else:
-            print("  (advisor_actions module not found, skipping)")
+        actions = evaluate_actions(profile, holdings, constraints)
+        for i, act in enumerate(actions[:3], 1):
+            print(f"  {i}. {act['name']}")
+            print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
+            print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
     except Exception as e:
         print("Monte Carlo run failed:", e)
-
-    print("\n--- Rebalance Recommendation ---")
-    try:
-        reb = recommend_rebalance(profile, holdings, constraints)
-        print("  Top 3 Allocation Drifts:")
-        for ac, d in sorted(reb["drift"].items(), key=lambda x: abs(x[1]), reverse=True)[:3]:
-            print(f"    {ac}: {d:+.2%}")
-        print("  First 5 Proposed Trades:")
-        for t in reb["proposed_trades"][:5]:
-            print(f"    {t['action'].upper()} {t.get('ticker', t.get('asset_class', ''))} in {t['account_type']} for ${t['trade_value']:,.2f}")
-        print("  Monte Carlo Deltas (After vs Before):")
-        print(f"    Success Prob Δ: {reb['delta_success_probability']:+.2%}")
-        print(f"    Median Bal Δ:   ${reb['delta_median_end_balance']:+,.2f}")
-        print(f"    IRMAA Warn Yrs Δ: {reb['delta_avg_irmaa_warning_years']:+.2f}")
-    except Exception as e:
-        print("Rebalance recommendation failed:", e)
 
     print("\nBaseline scenario executed successfully.")
 

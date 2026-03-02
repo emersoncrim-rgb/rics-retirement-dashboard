@@ -34,16 +34,6 @@ def run_monte_carlo(profile: Dict[str, Any], holdings: List[Dict[str, Any]], con
     pension_annual = profile.get("pension_annual", 0.0)
     pension_start_age = profile.get("pension_start_age", 65)
 
-    policy = constraints.get("spending_policy", {})
-    policy_enabled = policy.get("enabled", False)
-    p_floor = policy.get("floor_pct", 0.90)
-    p_ceil = policy.get("ceiling_pct", 1.10)
-    p_cut_trig = policy.get("cut_trigger", 0.85)
-    p_raise_trig = policy.get("raise_trigger", 1.15)
-    p_cut_pct = policy.get("cut_pct", 0.10)
-    p_raise_pct = policy.get("raise_pct", 0.05)
-    p_discount = policy.get("discount_rate", 0.04)
-
     # Slice 9: state + tax knobs
     state = profile.get("state", "None")
     fed_std_deduction = constraints.get("federal_standard_deduction_mfj", 29200.0) if isinstance(constraints, dict) else 29200.0
@@ -55,39 +45,17 @@ def run_monte_carlo(profile: Dict[str, Any], holdings: List[Dict[str, Any]], con
     sims_with_irmaa_warnings = 0
 
     for _ in range(num_simulations):
-        current_policy_spending = base_spending
         balances = initial_balances.copy()
         current_age = base_age
         failed = False
         sim_irmaa_warnings = 0
 
         for yr_idx in range(projection_years):
-            start_bal = sum(balances.values())
-            
-            # Calculate PV of remaining net spending
-            rem_years = projection_years - yr_idx
-            pv_rem = 0.0
-            for future_yr in range(rem_years):
-                f_spending = current_policy_spending * ((1 + inflation_rate) ** (yr_idx + future_yr))
-                f_age = current_age + future_yr
-                f_ss = ss_annual * ((1 + cola) ** (f_age - ss_start_age)) if f_age >= ss_start_age else 0.0
-                f_pension = pension_annual if f_age >= pension_start_age else 0.0
-                f_net = max(0.0, f_spending - (f_ss + f_pension))
-                pv_rem += f_net / ((1 + p_discount) ** (future_yr + 1))
-
-            funding_ratio = start_bal / pv_rem if pv_rem > 0 else 999.0
-
-            if policy_enabled:
-                if funding_ratio < p_cut_trig:
-                    current_policy_spending = max(base_spending * p_floor, current_policy_spending * (1 - p_cut_pct))
-                elif funding_ratio > p_raise_trig:
-                    current_policy_spending = min(base_spending * p_ceil, current_policy_spending * (1 + p_raise_pct))
-
             # Sample annual return (placeholder blended return)
             annual_return = random.gauss(0.055, 0.10)
 
             # Spending grows with inflation
-            spending_need = current_policy_spending * ((1 + inflation_rate) ** yr_idx)
+            spending_need = base_spending * ((1 + inflation_rate) ** yr_idx)
 
             # Income streams
             income_ss = ss_annual * ((1 + cola) ** (current_age - ss_start_age)) if current_age >= ss_start_age else 0.0

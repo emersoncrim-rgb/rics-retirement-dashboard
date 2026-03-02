@@ -1,0 +1,24 @@
+--- rebalance_sim.py
++++ rebalance_sim.py
+@@ -242,18 +242,8 @@
+                 if sec in avoided:
+                     return 3
+                 return 1
+-
+-        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first
+-        impacted = False
+-        for t in trades:
+-            tkr = str(getattr(t, "ticker", "")).strip().upper()
+-            sec = ticker_to_sector.get(tkr, "")
+-            if sec in liked or sec in avoided:
+-                impacted = True
+-                break
+-
+-        if impacted:
+-            # Tie-breakers: for same rank, prefer sells before buys, then larger trades first
+-            trades.sort(key=lambda t: (_sector_rank(t), 0 if t.action == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
++                
++        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first (stable sort)
++        trades.sort(key=lambda t: (_sector_rank(t), 0 if getattr(t, "action", "") == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
+ 
+     total_tax = sum(t.estimated_tax for t in trades)

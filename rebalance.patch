@@ -1,0 +1,49 @@
+--- rebalance_sim.py
++++ rebalance_sim.py
+@@ -306,6 +306,33 @@
+-                    if sec in avoided:
+-                        return 3
+-                    return 1
++                    # normalize sector for comparisons
++                    sec_norm = str(sec or "").strip().lower()
++                    if sec_norm in avoided:
++                        return 0   # avoided sells first
++                    if sec_norm in liked:
++                        return 2   # liked sells last
++                    return 1       # neutral in the middle
+-
+-        has_overlap = False
+-        for t in trades:
+-            tkr = str(getattr(t, "ticker", "")).strip().upper()
+-            sec = ticker_to_sector.get(tkr, "")
+-            if sec in liked or sec in avoided:
+-                has_overlap = True
+-                break
+-
+-        if has_overlap:
+-            trades.sort(key=_sector_rank)
++        # Normalize prefs once (case-insensitive compare)
++        liked_norm = {str(s).strip().lower() for s in (liked or [])}
++        avoided_norm = {str(s).strip().lower() for s in (avoided or [])}
++        liked = liked_norm
++        avoided = avoided_norm
++
++        has_overlap = False
++        for t in trades:
++            tkr = str(getattr(t, "ticker", "")).strip().upper()
++            sec = ticker_to_sector.get(tkr, "")
++            sec_norm = str(sec or "").strip().lower()
++            if sec_norm in liked or sec_norm in avoided:
++                has_overlap = True
++                break
++
++        if has_overlap:
++            # stable sort: sells first; within sells apply sector rank
++            trades.sort(
++                key=lambda t: (
++                    0 if str(getattr(t, "action", "")).lower() == "sell" else 1,
++                    _sector_rank(t),
++                )
++            )
+ 
+     total_tax = sum(t.estimated_tax for t in trades)

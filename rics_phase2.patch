@@ -1,0 +1,112 @@
+--- app.py
++++ app.py
+@@ -308,36 +308,24 @@
+     total_exp = sum(float(e.get("amount", 0) or 0) for e in expense_items)
+     coverage = (total_income / total_exp) if total_exp > 0 else 0.0
+ 
+-    # Do not fabricate plan-health metrics
+-    funding_ratio_display = "—"
+-    probability_display = "—"
+-
+-    st.write(
+-        f"Funding ratio {funding_ratio_display} — at current withdrawal pace, your plan has a "
+-        f"{probability_display} chance of lasting through expected lifetime."
+-    )
++    st.subheader("Plan Health Summary")
++    surplus = total_income - total_exp
++    st.write(
++        "Based on your current cash flow, here is a summary of your expected income and expenses for the year. "
++        "These figures help ensure your day-to-day needs are comfortably met."
++    )
+ 
+     with st.expander("Why this status?"):
+         st.write(
+             "This summary is designed to be simple. The status is driven by the highest-priority planning "
+             "flags currently found (if any). You can review details in Recommendations when you're ready."
+         )
+-        st.write(
+-            "Some advanced metrics (like funding ratio and success probability) will appear here once they "
+-            "are available from the planning engine. For now, this page emphasizes clarity and next steps."
+-        )
+ 
+     col1, col2, col3 = st.columns(3)
+-    col1.metric("Funding Ratio", funding_ratio_display)
+-    col2.metric("Success Probability", probability_display)
+-    col3.metric("Income Coverage", f"{coverage:.2f}×" if total_exp > 0 else "—")
+-
+-    st.divider()
+-    st.subheader("This year — income vs expenses")
+-    st.write(
+-        f"**Projected Income:** ${total_income:,.0f}   •   "
+-        f"**Estimated Expenses:** ${total_exp:,.0f}   •   "
+-        f"**Surplus / Shortfall:** ${total_income - total_exp:,.0f}"
+-    )
++    col1.metric("Projected Income", f"${total_income:,.0f}")
++    col2.metric("Estimated Expenses", f"${total_exp:,.0f}")
++    col3.metric("Surplus / Shortfall", f"${surplus:,.0f}")
++
++    st.write(f"**Income Coverage:** Your current income covers {coverage:.2f}× of your estimated annual expenses.")
+ 
+     st.divider()
+-    st.subheader("Top 3 Actions")
++    st.subheader("Next Steps")
++    st.write("We've identified a few areas where you might consider making adjustments. Take these one step at a time.")
+     if recs:
+         for idx, rec in enumerate(recs[:3], start=1):
+             title = getattr(rec, "title", f"Recommendation {idx}")
+@@ -348,22 +336,31 @@
+             if desc:
+                 st.write(desc)
+-            c1, c2, c3 = st.columns([1, 1, 6])
++            c1, c2, c3 = st.columns([1.5, 1.5, 6])
+             with c1:
+-                st.button("Review", key=f"plan_review_{idx}")
++                st.button("Review", key=f"plan_review_{idx}", type="primary")
+             with c2:
+-                st.button("See details", key=f"plan_details_{idx}")
++                st.button("Details", key=f"plan_details_{idx}") # Defaults to visually quiet secondary style
+             with c3:
+                 st.write("")
+-            st.divider()
++            st.markdown("<br>", unsafe_allow_html=True) # Softens the spacing, removing harsh dividers
+     else:
+-        st.write("No urgent actions required.")
++        st.write("No urgent actions required. Your plan is on track.")
+ 
+     st.markdown("**Quick Links**")
+     q1, q2, q3, q4 = st.columns(4)
+     with q1:
+-        st.button("View portfolio")
++        if st.button("View portfolio", use_container_width=True):
++            st.session_state["nav_section"] = "Your Portfolio"
++            st.rerun()
+     with q2:
+-        st.button("Open cash flow plan")
++        if st.button("Open cash flow plan", use_container_width=True):
++            st.session_state["nav_section"] = "Your Portfolio"
++            st.rerun()
+     with q3:
+-        st.button("Tax details")
++        if st.button("Tax details", use_container_width=True):
++            st.session_state["nav_section"] = "Details & Tools"
++            st.rerun()
+     with q4:
+-        st.button("Advanced tools")
++        if st.button("Advanced tools", use_container_width=True):
++            st.session_state["nav_section"] = "Details & Tools"
++            st.rerun()
+@@ -737,9 +734,13 @@
+         _setup_trades_sidebar()
+ 
+     # ── Primary Navigation ─────────────────────────────────────
++    if "nav_section" not in st.session_state:
++        st.session_state["nav_section"] = "Your Plan"
++
+     section = st.sidebar.radio(
+         "Navigate",
+-        ["Your Plan", "Your Portfolio", "Details & Tools"]
++        ["Your Plan", "Your Portfolio", "Details & Tools"],
++        key="nav_section"
+     )
+ 
+     # ── Section Routing ─────────────────────────────────────────

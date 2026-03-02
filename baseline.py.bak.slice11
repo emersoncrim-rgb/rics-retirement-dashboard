@@ -12,10 +12,7 @@ import sys
 
 from plan_engine import run_plan
 from monte_carlo import run_monte_carlo
-try:
-    from advisor_actions import evaluate_actions
-except ImportError:
-    evaluate_actions = None
+from advisor_actions import evaluate_actions
 from recommendations import recommend_rebalance
 
 
@@ -88,14 +85,6 @@ def run_baseline():
     for k, v in plan_result.get("plan_summary", {}).items():
         print(f"  {k}: {v}")
 
-    spending_policy = constraints.get("spending_policy", {})
-    if spending_policy.get("enabled"):
-        print("\n--- Spending Policy (First 5 Years) ---")
-        for yr in plan_result.get("timeline", [])[:5]:
-            cf = yr["cashflow"]
-            print(f"  Year {yr['year']}: Spending ${cf['adjusted_spending']:,.2f} | "
-                  f"Ratio: {cf['funding_ratio']:.2f} | Action: {cf['policy_action']}")
-
     
     print("\n--- Monte Carlo Summary ---")
     try:
@@ -107,16 +96,13 @@ def run_baseline():
             print(f"    {p}: ${val:,.2f}")
             
         print("\n--- Advisor Actions (Top 3) ---")
-        if evaluate_actions:
-            actions = evaluate_actions(profile, holdings, constraints)
-            for i, act in enumerate(actions[:3], 1):
-                print(f"  {i}. {act['name']}")
-                print(f"     Score:          {act['score']:+.2f}")
-                print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
-                print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
-                print(f"     IRMAA Warn Yrs Δ: {act['delta_avg_irmaa_warning_years']:+.2f}")
-        else:
-            print("  (advisor_actions module not found, skipping)")
+        actions = evaluate_actions(profile, holdings, constraints)
+        for i, act in enumerate(actions[:3], 1):
+            print(f"  {i}. {act['name']}")
+            print(f"     Score:          {act['score']:+.2f}")
+            print(f"     Success Prob Δ: {act['delta_success_probability']:+.2%}")
+            print(f"     Median Bal Δ:   ${act['delta_median_end_balance']:+,.2f}")
+            print(f"     IRMAA Warn Yrs Δ: {act['delta_avg_irmaa_warning_years']:+.2f}")
     except Exception as e:
         print("Monte Carlo run failed:", e)
 

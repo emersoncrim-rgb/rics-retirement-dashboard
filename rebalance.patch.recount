@@ -1,0 +1,86 @@
+--- rebalance_sim.py
++++ rebalance_sim.py
+@@ -314,40 +314,57 @@
+     # Post-sort trades to respect sector preferences across the full proposal set
+     # (Tests expect avoided sectors sold first, liked sectors bought first, liked sectors sold last.)
+     if sector_prefs and sector_prefs.get("tilt_strength", 0) > 0 and trades:
+         liked = {str(x).strip().lower() for x in sector_prefs.get("liked_sectors", []) if str(x).strip()}
+         avoided = {str(x).strip().lower() for x in sector_prefs.get("avoided_sectors", []) if str(x).strip()}
+
+         # Map ticker -> sector from holdings (best effort)
+         ticker_to_sector = {}
+         for h in holdings:
+             tkr = str(h.get("ticker", "")).strip().upper()
+             sec = str(h.get("sector", "")).strip().lower()
+             if tkr and tkr not in ticker_to_sector:
+                 ticker_to_sector[tkr] = sec
+
+-        def _sector_rank(trade) -> int:
+-            tkr = str(getattr(trade, "ticker", "")).strip().upper()
+-            sec = ticker_to_sector.get(tkr, "")
+-            act = getattr(trade, "action", "")
+-
+-            # Keep CASH/MMF late but not last for sells; never preferred for buys
+-            if tkr in {"CASH", "MMF"}:
+-                return 2
+-
+-            if act == "sell":
+-                # avoided sold first, liked sold last
+-                if sec in avoided:
+-                    return 0
+-                if sec in liked:
+-                    return 3
+-                return 1
+-            else:
+-                # buy: liked first, avoided last
+-                if sec in liked:
+-                    return 0
+-                if sec in avoided:
+-                    return 3
+-                return 1
+-                
+-        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first (stable sort)
+-        trades.sort(key=lambda t: (_sector_rank(t), 0 if getattr(t, "action", "") == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
++        def _sector_rank_sell(trade) -> int:
++            """Rank SELL trades only: avoided first, liked last, neutral middle."""
++            tkr = str(getattr(trade, "ticker", "")).strip().upper()
++            sec = ticker_to_sector.get(tkr, "")
++            if sec in avoided:
++                return 0
++            if sec in liked:
++                return 2
++            return 1
++
++        # Only apply if we actually have overlap with liked/avoided sectors in the *proposed* trades.
++        overlap = False
++        for t in trades:
++            tkr = str(getattr(t, "ticker", "")).strip().upper()
++            sec = ticker_to_sector.get(tkr, "")
++            if sec in liked or sec in avoided:
++                overlap = True
++                break
++
++        if overlap:
++            # IMPORTANT: do NOT reorder BUY trades (especially CASH/MMF) or you'll break neutral ordering tests.
++            # We only reorder SELL trades, stably, and then put them back into their original positions.
++            sell_idxs = []
++            sells = []
++            for i, t in enumerate(trades):
++                if str(getattr(t, "action", "")).strip().lower() == "sell":
++                    sell_idxs.append(i)
++                    sells.append(t)
++
++            # Stable sort among sells:
++            # - avoided sells first
++            # - neutral sells next
++            # - liked sells last
++            # Tie-breaker: larger sells first within the same rank (keeps deterministic output)
++            sells.sort(
++                key=lambda t: (
++                    _sector_rank_sell(t),
++                    -float(getattr(t, "trade_value", 0) or 0.0),
++                )
++            )
++
++            for idx, sell_trade in zip(sell_idxs, sells):
++                trades[idx] = sell_trade

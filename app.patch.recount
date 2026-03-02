@@ -1,0 +1,172 @@
+--- app.py
++++ app.py
+@@ -198,9 +198,9 @@
+     med_sev = sum(1 for r in recs if getattr(r, "severity", "") == "medium")
+     if high_sev > 0:
+-        status_badge = "🔴 Action recommended now"
++        status_badge = "[!] Action recommended now"
+     elif med_sev > 0:
+-        status_badge = "🟡 Small adjustments recommended"
++        status_badge = "[~] Small adjustments recommended"
+     else:
+-        status_badge = "🟢 Your plan is on track"
++        status_badge = "[OK] Your plan is on track"
+ 
+     st.subheader(status_badge)
+@@ -420,13 +420,13 @@
+     col3.metric("Social Security", f"${tp['ss_combined_annual']:,.0f}/yr")
+ 
+     st.subheader("Standard Deduction")
+     st.write(f"Base: ${tp['standard_deduction_base']:,.0f} + "
+-             f"Senior bonus: 2 × ${tp['standard_deduction_senior_bonus_each']:,.0f} = "
++             f"Senior bonus: 2 x ${tp['standard_deduction_senior_bonus_each']:,.0f} = "
+              f"**${tp['effective_standard_deduction']:,.0f}**")
+ 
+     st.subheader("Federal Brackets (MFJ 2025)")
+     bracket_data = []
+     for b in tp["federal_brackets_mfj_2025"]:
+-        upper = f"${b['upper']:,.0f}" if b['upper'] else "∞"
++        upper = f"${b['upper']:,.0f}" if b['upper'] else "infinity"
+         bracket_data.append({
+             "Range": f"${b['lower']:,.0f} - {upper}",
+@@ -433,5 +433,5 @@
+     st.subheader("IRMAA Thresholds (MFJ 2025)")
+     irmaa_data = []
+     for tier in tp["irmaa_thresholds_mfj_2025"]:
+-        upper = f"${tier['magi_upper']:,.0f}" if tier['magi_upper'] else "∞"
++        upper = f"${tier['magi_upper']:,.0f}" if tier['magi_upper'] else "infinity"
+         irmaa_data.append({
+@@ -499,57 +499,70 @@
+ 
+     st.write("Actionable planning opportunities based on your complete financial picture.")
+ 
+-    holdings = load_holdings_with_mode()
+-
+-    _show_sector_prefs_summary(prefs)
+-    _show_sector_exposure_panel(prefs)
+-
+     annual_expenses = st.number_input("Annual expenses for coverage ratio",
+                                        value=90000, step=5000)
+     result = analyze_holdings(holdings, annual_expenses=annual_expenses)
+ 
+     # Summary metrics
+     col1, col2, col3, col4 = st.columns(4)
+-    col1.metric("Total Annual Income", f"${result.total_annual_income:,.0f}")
+-    col2.metric("Weighted Avg Yield", f"{result.weighted_avg_yield:.2%}")
+-    col3.metric("Income Coverage", f"{result.income_coverage_ratio:.1%}")
+-    col4.metric("5-Year Projected", f"${result.projected_5y_income:,.0f}")
++    total_annual = getattr(result, "total_annual_income", 0.0) or 0.0
++    wavg_yield = getattr(result, "weighted_avg_yield", 0.0) or 0.0
++    cov_ratio = getattr(result, "income_coverage_ratio", 0.0) or 0.0
++    proj_5y = getattr(result, "projected_5y_income", 0.0) or 0.0
++
++    col1.metric("Total Annual Income", f"${total_annual:,.0f}")
++    col2.metric("Weighted Avg Yield", f"{wavg_yield:.2%}")
++    col3.metric("Income Coverage", f"{cov_ratio:.1%}")
++    col4.metric("5-Year Projected", f"${proj_5y:,.0f}")
+ 
+     # Income by tax treatment
+     st.subheader("Income by Tax Treatment")
++    taxable_qual = getattr(result, "taxable_qualified_income", 0.0) or 0.0
++    taxable_ord = getattr(result, "taxable_ordinary_income", 0.0) or 0.0
++    tax_def = getattr(result, "tax_deferred_income", 0.0) or 0.0
++    tax_free = getattr(result, "tax_free_income", 0.0) or 0.0
++
+     tax_data = {
+-        "Taxable - Qualified": result.taxable_qualified_income,
+-        "Taxable - Ordinary": result.taxable_ordinary_income,
+-        "Tax-Deferred (IRA)": result.tax_free_income,
+-        "Tax-Free (Roth)": result.tax_free_income,
++        "Taxable - Qualified": taxable_qual,
++        "Taxable - Ordinary": taxable_ord,
++        "Tax-Deferred (IRA)": tax_def,
++        "Tax-Free (Roth)": tax_free,
+     }
+     st.bar_chart(tax_data)
+ 
+     # Holdings detail
+     st.subheader("Holding-Level Income")
+     detail = []
+-    for h in result.holdings:
++    for h in getattr(result, "holdings", []):
+         detail.append({
+-            "Account": h.account_id,
+-            "Ticker": h.ticker,
+-            "Value": f"${h.market_value:,.0f}",
+-            "Yield": f"{h.current_yield:.2%}",
+-            "Income": f"${h.annual_income:,.0f}",
+-            "5Y Proj": f"${h.projected_income_5y:,.0f}",
+-            "10Y Proj": f"${h.projected_income_10y:,.0f}",
+-            "Tax Treatment": h.tax_treatment,
++            "Account": getattr(h, "account_id", ""),
++            "Ticker": getattr(h, "ticker", ""),
++            "Value": f"${getattr(h, 'market_value', 0.0):,.0f}",
++            "Yield": f"{getattr(h, 'current_yield', 0.0):.2%}",
++            "Income": f"${getattr(h, 'annual_income', 0.0):,.0f}",
++            "5Y Proj": f"${getattr(h, 'projected_income_5y', 0.0):,.0f}",
++            "10Y Proj": f"${getattr(h, 'projected_income_10y', 0.0):,.0f}",
++            "Tax Treatment": getattr(h, "tax_treatment", ""),
+         })
+     st.dataframe(detail, use_container_width=True)
+ 
+     # Upgrade opportunities
+     st.subheader("Dividend Upgrade Opportunities")
+     opps = find_upgrade_opportunities(holdings, constraints)
+     if opps:
+         for opp in opps[:10]:
+-            icon = "✅" if opp.feasible else "⚠️"
++            feasible = getattr(opp, "feasible", False)
++            icon = "[Y]" if feasible else "[!]"
++            curr_tick = getattr(opp, "current_ticker", "")
++            curr_y = getattr(opp, "current_yield", 0.0)
++            sugg_tick = getattr(opp, "suggested_ticker", "")
++            sugg_y = getattr(opp, "suggested_yield", 0.0)
++            inc = getattr(opp, "income_increase", 0.0)
++            rat = getattr(opp, "rationale", "")
++
+             st.write(
+-                f"{icon} **{opp.current_ticker}** ({opp.current_yield:.2%}) → "
+-                f"**{opp.suggested_ticker}** ({opp.suggested_yield:.2%}) | "
+-                f"+${opp.income_increase:,.0f}/yr | _{opp.rationale}_"
++                f"{icon} **{curr_tick}** ({curr_y:.2%}) -> "
++                f"**{sugg_tick}** ({sugg_y:.2%}) | "
++                f"+${inc:,.0f}/yr | _{rat}_"
+             )
+     else:
+@@ -645,14 +652,14 @@
+ 
+     # Severity legend
+-    severity_icons = {"high": "🔴", "medium": "🟡", "low": "🟢", "info": "ℹ️"}
++    severity_icons = {"high": "[!]", "medium": "[~]", "low": "[OK]", "info": "[i]"}
+     category_icons = {
+-        "tax": "💰", "risk": "⚠️", "income": "📈",
+-        "withdrawal": "🏦", "compliance": "📋", "info": "ℹ️",
++        "tax": "[$]", "risk": "[!]", "income": "[+]",
++        "withdrawal": "[W]", "compliance": "[C]", "info": "[i]",
+     }
+ 
+     st.write(f"**{len(recs)} recommendations found** -- sorted by priority")
+ 
+     for rec in recs:
+-        sev_icon = severity_icons.get(rec.severity, "❓")
++        sev_icon = severity_icons.get(rec.severity, "[?]")
+         cat_icon = category_icons.get(rec.category, "")
+         with st.expander(f"{sev_icon} {cat_icon} **{rec.title}** -- _{rec.impact_estimate}_",
+@@ -717,5 +724,5 @@
+     st.set_page_config(
+         page_title="RICS - Retirement Income & Cash-flow Simulator",
+-        page_icon="📊",
++        page_icon="[Chart]",
+         layout="wide",
+     )
+@@ -755,8 +762,8 @@
+         return  # Block the rest of the app until interaction is completed
+ 
+     # Main App Title
+-    st.title("📊 RICS - Retirement Income & Cash-flow Simulator")
++    st.title("[Chart] RICS - Retirement Income & Cash-flow Simulator")
+ 
+-    # ✅ Sidebar: Advanced tools live here, collapsed by default
++    # [OK] Sidebar: Advanced tools live here, collapsed by default
+     with st.sidebar.expander("Advanced / Admin", expanded=False):
+         _setup_price_sidebar()

@@ -1,0 +1,22 @@
+@@ -349,8 +349,18 @@
+                  if sec in avoided:
+                      return 3
+                  return 1
+-                
+-        # Tie-breakers: for same rank, prefer sells before buys, then larger trades first (stable sort)
+-        trades.sort(key=lambda t: (_sector_rank(t), 0 if getattr(t, "action", "") == "sell" else 1, -float(getattr(t, "trade_value", 0) or 0.0)))
++
++        # Only re-order if preferences actually overlap with proposed trades.
++        # If there is overlap, do a stable sort by sector rank only.
++        has_overlap = False
++        for t in trades:
++            tkr = str(getattr(t, "ticker", "")).strip().upper()
++            sec = ticker_to_sector.get(tkr, "")
++            if sec in liked or sec in avoided:
++                has_overlap = True
++                break
++
++        if has_overlap:
++            trades.sort(key=_sector_rank)
+ 
+     total_tax = sum(t.estimated_tax for t in trades)

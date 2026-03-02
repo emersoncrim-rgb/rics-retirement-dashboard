@@ -8,7 +8,6 @@ This is intentionally a skeleton: cashflows, taxes, RMDs, and Monte Carlo integr
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-from rebalance_sim import compute_current_allocation, score_to_allocation, compute_drift
 
 
 def _infer_horizon_years(constraints: Dict[str, Any]) -> int:
@@ -20,21 +19,6 @@ def _infer_horizon_years(constraints: Dict[str, Any]) -> int:
     except Exception:
         years = 20
     return max(1, years)
-
-def _get_aggressiveness(constraints: Dict[str, Any]) -> int:
-    """Extract a 0-100 aggressiveness score from constraints, supporting dict or numeric shapes."""
-    if not isinstance(constraints, dict):
-        return 50
-    raw = constraints.get("aggressiveness_score", 50)
-    # Common shapes: number, {"value": n}, {"score": n}, {"default": n}
-    if isinstance(raw, (int, float)):
-        return int(raw)
-    if isinstance(raw, dict):
-        for k in ("value", "score", "default"):
-            v = raw.get(k)
-            if isinstance(v, (int, float)):
-                return int(v)
-    return 50
 
 
 def _calc_fed_tax(income: float) -> float:
@@ -198,11 +182,6 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
     balances = get_initial_balances(holdings)
     total_val = sum(balances.values())
 
-    aggressiveness = _get_aggressiveness(constraints)
-    target_alloc = score_to_allocation(aggressiveness).to_dict()
-    current_alloc = compute_current_allocation(holdings)
-    drift = compute_drift(current_alloc, target_alloc)
-
     withdrawal_sequence = constraints.get("withdrawal_sequence_default", ["taxable", "trad_ira", "inherited_ira", "roth_ira"])
     rmd_start_age = constraints.get("rmd_start_age", 73)
     rmd_applies_to = constraints.get("rmd_applies_to", ["trad_ira"])
@@ -228,52 +207,16 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
     base_spending = constraints.get("placeholder_spending", 100000.0)
     inflation_rate = constraints.get("inflation_rate", 0.025)
 
-    policy = constraints.get("spending_policy", {})
-    p_enabled = policy.get("enabled", False)
-    p_floor = policy.get("floor_pct", 0.90)
-    p_ceil = policy.get("ceiling_pct", 1.10)
-    p_cut_trig = policy.get("cut_trigger", 0.85)
-    p_raise_trig = policy.get("raise_trigger", 1.15)
-    p_cut_pct = policy.get("cut_pct", 0.10)
-    p_raise_pct = policy.get("raise_pct", 0.05)
-    p_discount = policy.get("discount_rate", 0.04)
-
     ss_annual = profile.get("social_security_annual", 0.0)
     ss_start_age = profile.get("social_security_start_age", 67)
     cola = profile.get("cola", inflation_rate)
     pension_annual = profile.get("pension_annual", 0.0)
     pension_start_age = profile.get("pension_start_age", 65)
 
-    current_policy_spending = base_spending
-
     
     for i in range(1, horizon_years + 1):
         year = current_year + i - 1
-        start_bal = sum(balances.values())
-        
-        # PV of remaining net spend
-        pv_rem = 0.0
-        for f_idx in range(horizon_years - i + 1):
-            f_spending = current_policy_spending * ((1 + inflation_rate) ** (i - 1 + f_idx))
-            f_age = current_age + f_idx
-            f_ss = ss_annual * ((1 + cola) ** (f_age - ss_start_age)) if f_age >= ss_start_age else 0.0
-            f_pension = pension_annual if f_age >= pension_start_age else 0.0
-            f_net = max(0.0, f_spending - (f_ss + f_pension))
-            pv_rem += f_net / ((1 + p_discount) ** (f_idx + 1))
-
-        funding_ratio = start_bal / pv_rem if pv_rem > 0 else 999.0
-        policy_action = "hold"
-        if p_enabled:
-            if funding_ratio < p_cut_trig:
-                new_val = current_policy_spending * (1 - p_cut_pct)
-                current_policy_spending = max(base_spending * p_floor, new_val)
-                policy_action = "cut"
-            elif funding_ratio > p_raise_trig:
-                new_val = current_policy_spending * (1 + p_raise_pct)
-                current_policy_spending = min(base_spending * p_ceil, new_val)
-                policy_action = "raise"
-
-        spending_need = current_policy_spending * ((1 + inflation_rate) ** (i - 1))
+        spending_need = base_spending * ((1 + inflation_rate) ** (i - 1))
         income_ss = ss_annual * ((1 + cola) ** (current_age - ss_start_age)) if current_age >= ss_start_age else 0.0
         income_pension = pension_annual if current_age >= pension_start_age else 0.0
         income_total = income_ss + income_pension
@@ -294,11 +237,6 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
             "year_index": i,
             "year": year,
             "cashflow": {
-                "base_spending": round(current_policy_spending, 2),
-                "adjusted_spending": round(spending_need, 2),
-                "policy_action": policy_action,
-                "funding_ratio": round(funding_ratio, 4),
-                "pv_remaining_net_spend": round(pv_rem, 2),
                 "spending_need": round(spending_need, 2),
                 "income_total": round(income_total, 2),
                 "income_breakdown": {
@@ -348,9 +286,6 @@ def run_plan(profile: Dict[str, Any], holdings: List[Dict[str, Any]], constraint
         "profile_loaded": bool(profile),
         "holdings_count": len(holdings or []),
         "advisor_grade_status": "NOT_YET (Slice 1 skeleton)",
-        "allocation_current": current_alloc,
-        "allocation_target": target_alloc,
-        "allocation_drift": drift,
     }
 
     return {

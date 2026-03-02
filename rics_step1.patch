@@ -1,0 +1,595 @@
+--- app.py
++++ app.py
+@@ -79,165 +79,159 @@
+ 
+ 
+ def _setup_price_sidebar():
+     """Render sidebar controls for price mode and settings. Call once from main()."""
+-    st.sidebar.subheader("📡 Price Mode")
++    st.subheader("📡 Price Mode")
+ 
+     mode = st.session_state.get("price_mode", "Snapshot (CSV prices)")
+     api_key = st.session_state.get("finnhub_key", "")
+ 
+     if mode.startswith("Live") and api_key:
+-        st.sidebar.markdown("🟢 Live prices active")
++        st.markdown("🟢 Live prices active")
+     else:
+-        st.sidebar.markdown("⚪ Using saved prices")
++        st.markdown("⚪ Using saved prices")
+ 
+-    with st.sidebar.expander("Settings"):
+-        new_key = st.text_input(
+-            "Finnhub API key",
+-            value=api_key,
+-            type="password",
+-        )
+-        new_mode = st.radio(
+-            "Default valuation mode",
+-            ("Snapshot (CSV prices)", "Live (Finnhub)"),
+-            index=1 if mode.startswith("Live") else 0,
+-        )
+-        if st.button("Save Settings"):
+-            settings_store.set_setting("finnhub_api_key", new_key)
+-            settings_store.set_setting("price_mode", "live" if new_mode.startswith("Live") else "disk")
+-            st.session_state["finnhub_key"] = new_key
+-            st.session_state["price_mode"] = new_mode
+-            st.rerun()
++    st.markdown("**Settings**")
++    new_key = st.text_input(
++        "Finnhub API key",
++        value=api_key,
++        type="password",
++    )
++    new_mode = st.radio(
++        "Default valuation mode",
++        ("Snapshot (CSV prices)", "Live (Finnhub)"),
++        index=1 if mode.startswith("Live") else 0,
++    )
++    if st.button("Save Settings"):
++        settings_store.set_setting("finnhub_api_key", new_key)
++        settings_store.set_setting("price_mode", "live" if new_mode.startswith("Live") else "disk")
++        st.session_state["finnhub_key"] = new_key
++        st.session_state["price_mode"] = new_mode
++        st.rerun()
++
+ def _setup_holdings_editor():
+     """Render sidebar controls for editing holdings."""
+-    with st.sidebar.expander("📁 Holdings", expanded=False):
+-        st.markdown("Edit your portfolio snapshot below.")
+-        try:
+-            rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+-        except Exception as e:
+-            st.error(f"Failed to load holdings: {e}")
+-            return
++    st.subheader("📁 Holdings")
++    st.markdown("Edit your portfolio snapshot below.")
++    try:
++        rows, fieldnames = load_holdings(SNAPSHOT_PATH)
++    except Exception as e:
++        st.error(f"Failed to load holdings: {e}")
++        return
+ 
+-        edited_rows = st.data_editor(
+-            rows,
+-            num_rows="dynamic",
+-            key="holdings_editor",
+-            use_container_width=True,
+-        )
++    edited_rows = st.data_editor(
++        rows,
++        num_rows="dynamic",
++        key="holdings_editor",
++        use_container_width=True,
++    )
+ 
+-        if st.button("Save Holdings"):
+-            errors = validate_holdings(edited_rows)
+-            if errors:
+-                for err in errors:
+-                    st.error(f"• {err}")
++    if st.button("Save Holdings"):
++        errors = validate_holdings(edited_rows)
++        if errors:
++            for err in errors:
++                st.error(f"• {err}")
++        else:
++            ok, save_errors = save_holdings(SNAPSHOT_PATH, edited_rows, fieldnames)
++            if ok:
++                st.success("Saved successfully!")
++                st.rerun()
+             else:
+-                ok, save_errors = save_holdings(SNAPSHOT_PATH, edited_rows, fieldnames)
+-                if ok:
+-                    st.success("Saved successfully!")
+-                    st.rerun()
+-                else:
+-                    for err in save_errors:
+-                        st.error(f"• {err}")
++                for err in save_errors:
++                    st.error(f"• {err}")
++
+ def _setup_trades_sidebar():
+     """Render sidebar controls for logging trades."""
+-    with st.sidebar.expander("🧾 Trades", expanded=False):
+-        applied_count = settings_store.get_setting("trades_applied_count", 0)
+-        try:
+-            trade_rows, _ = load_trades(TRADE_LOG_PATH)
+-        except Exception:
+-            trade_rows = []
+-        st.caption(f"Applied trades: {applied_count} / {len(trade_rows)}")
+-        st.markdown("Log a new trade below.")
+-        with st.form("trade_form", clear_on_submit=True):
+-            trade_date = st.date_input("Date")
+-            account_id = st.text_input("Account ID")
+-            action = st.selectbox("Action", ["buy", "sell", "withdraw"])
+-            ticker = st.text_input("Ticker")
+-            shares = st.number_input("Shares", min_value=0.0, step=1.0)
+-            price = st.number_input("Price", min_value=0.0, step=1.0)
+-            notes = st.text_input("Notes")
+-            
+-            if st.form_submit_button("Add Trade"):
+-                trade = {
+-                    "trade_date": str(trade_date),
+-                    "account_id": account_id.strip(),
+-                    "action": action,
+-                    "ticker": ticker.strip().upper(),
+-                    "shares": str(shares),
+-                    "price": str(price),
+-                    "total_amount": str(shares * price) if shares and price else "0",
+-                    "cost_basis_per_share": "",
+-                    "realized_gain": "",
+-                    "term": "",
+-                    "notes": notes.strip()
+-                }
+-                ok, errors = append_trade(TRADE_LOG_PATH, trade)
+-                if ok:
+-                    st.success("Trade added!")
+-                    st.rerun()
+-                else:
+-                    for err in errors:
+-                        st.error(f"• {err}")
+-                        
+-        st.markdown("### Recent Trades")
+-        try:
+-            if trade_rows:
+-                rows = trade_rows
+-                recent = rows[-5:]
+-                recent.reverse()
+-                # Handle typed rows returning from ingest gracefully
+-                st.dataframe([r.__dict__ if hasattr(r, '__dict__') else r for r in recent], use_container_width=True)
++    st.subheader("🧾 Trades")
++    applied_count = settings_store.get_setting("trades_applied_count", 0)
++    try:
++        trade_rows, _ = load_trades(TRADE_LOG_PATH)
++    except Exception:
++        trade_rows = []
++    st.caption(f"Applied trades: {applied_count} / {len(trade_rows)}")
++    st.markdown("Log a new trade below.")
++    with st.form("trade_form", clear_on_submit=True):
++        trade_date = st.date_input("Date")
++        account_id = st.text_input("Account ID")
++        action = st.selectbox("Action", ["buy", "sell", "withdraw"])
++        ticker = st.text_input("Ticker")
++        shares = st.number_input("Shares", min_value=0.0, step=1.0)
++        price = st.number_input("Price", min_value=0.0, step=1.0)
++        notes = st.text_input("Notes")
++        
++        if st.form_submit_button("Add Trade"):
++            trade = {
++                "trade_date": str(trade_date),
++                "account_id": account_id.strip(),
++                "action": action,
++                "ticker": ticker.strip().upper(),
++                "shares": str(shares),
++                "price": str(price),
++                "total_amount": str(shares * price) if shares and price else "0",
++                "cost_basis_per_share": "",
++                "realized_gain": "",
++                "term": "",
++                "notes": notes.strip()
++            }
++            ok, errors = append_trade(TRADE_LOG_PATH, trade)
++            if ok:
++                st.success("Trade added!")
++                st.rerun()
+             else:
+-                st.info("No trades found.")
+-        except Exception as e:
+-            st.error(f"Failed to load trades: {e}")
+-        st.markdown("---")
++                for err in errors:
++                    st.error(f"• {err}")
++                    
++    st.markdown("### Recent Trades")
++    try:
++        if trade_rows:
++            rows = trade_rows
++            recent = rows[-5:]
++            recent.reverse()
++            # Handle typed rows returning from ingest gracefully
++            st.dataframe([r.__dict__ if hasattr(r, '__dict__') else r for r in recent], use_container_width=True)
++        else:
++            st.info("No trades found.")
++    except Exception as e:
++        st.error(f"Failed to load trades: {e}")
++    st.markdown("---")
+ 
+-        if st.button("Apply Trades to Snapshot"):
+-            try:
+-                snap_rows, fieldnames = load_holdings(SNAPSHOT_PATH)
++    if st.button("Apply Trades to Snapshot"):
++        try:
++            snap_rows, fieldnames = load_holdings(SNAPSHOT_PATH)
+ 
+-                trade_dicts = [
+-                    r.__dict__ if hasattr(r, "__dict__") else r
+-                    for r in trade_rows
+-                ]
++            trade_dicts = [
++                r.__dict__ if hasattr(r, "__dict__") else r
++                for r in trade_rows
++            ]
+ 
+-                new_trades, total_count = compute_new_trades(trade_dicts, applied_count)
++            new_trades, total_count = compute_new_trades(trade_dicts, applied_count)
+ 
+-                if not new_trades:
+-                    st.info("No new trades to apply.")
++            if not new_trades:
++                st.info("No new trades to apply.")
++            else:
++                new_snap, errors = apply_trades_to_snapshot(snap_rows, new_trades)
++
++                if errors:
++                    for e in errors:
++                        st.error(f"• {e}")
+                 else:
+-                    new_snap, errors = apply_trades_to_snapshot(snap_rows, new_trades)
+-
+-                    if errors:
+-                        for e in errors:
+-                            st.error(f"• {e}")
+-                    else:
+-                        ok, save_errors = save_holdings(SNAPSHOT_PATH, new_snap, fieldnames)
+-                        if ok:
+-                            settings_store.set_setting("trades_applied_count", total_count)
+-                            st.success("Trades applied successfully!")
+-                            st.rerun()
+-                        else:
+-                            for e in save_errors:
+-                                st.error(f"• {e}")
+-            except Exception as e:
+-                st.error(f"Failed to apply trades: {e}")
++                    ok, save_errors = save_holdings(SNAPSHOT_PATH, new_snap, fieldnames)
++                    if ok:
++                        settings_store.set_setting("trades_applied_count", total_count)
++                        st.success("Trades applied successfully!")
++                        st.rerun()
++                    else:
++                        for e in save_errors:
++                            st.error(f"• {e}")
++        except Exception as e:
++            st.error(f"Failed to apply trades: {e}")
++
+ def _setup_profile_editor():
+     """Render sidebar controls for editing user profile."""
+     profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+     
+-    with st.sidebar.expander("👤 Profile", expanded=False):
+-        st.markdown("Update your key financial details here.")
+-        patch = {}
+-        
+-        if "filing_status" in profile:
+-            valid_statuses = ["single", "mfj", "mfs", "hoh", "qw"]
+-            current_fs = profile["filing_status"] if profile["filing_status"] in valid_statuses else "single"
+-            fs = st.selectbox("Filing status", valid_statuses, index=valid_statuses.index(current_fs))
+-            if fs != profile["filing_status"]:
+-                patch["filing_status"] = fs
++    st.subheader("👤 Profile")
++    st.markdown("Update your key financial details here.")
++    patch = {}
++    
++    if "filing_status" in profile:
++        valid_statuses = ["single", "mfj", "mfs", "hoh", "qw"]
+@@ -245,39 +239,39 @@
+             if fs != profile["filing_status"]:
+                 patch["filing_status"] = fs
+                 
+-        if "ages" in profile and isinstance(profile["ages"], list) and len(profile["ages"]) >= 2:
+-            col1, col2 = st.columns(2)
+-            age1 = col1.number_input("Age (Person 1)", value=int(profile["ages"][0]), step=1)
+-            age2 = col2.number_input("Age (Person 2)", value=int(profile["ages"][1]), step=1)
+-            if age1 != profile["ages"][0] or age2 != profile["ages"][1]:
+-                patch["ages"] = [age1, age2]
++    if "ages" in profile and isinstance(profile["ages"], list) and len(profile["ages"]) >= 2:
++        col1, col2 = st.columns(2)
++        age1 = col1.number_input("Age (Person 1)", value=int(profile["ages"][0]), step=1)
++        age2 = col2.number_input("Age (Person 2)", value=int(profile["ages"][1]), step=1)
++        if age1 != profile["ages"][0] or age2 != profile["ages"][1]:
++            patch["ages"] = [age1, age2]
+                 
+-        if "ss_combined_annual" in profile:
+-            ss = st.number_input("Annual Social Security", value=float(profile["ss_combined_annual"]), step=1000.0)
+-            if ss != profile["ss_combined_annual"]:
+-                patch["ss_combined_annual"] = ss
++    if "ss_combined_annual" in profile:
++        ss = st.number_input("Annual Social Security", value=float(profile["ss_combined_annual"]), step=1000.0)
++        if ss != profile["ss_combined_annual"]:
++            patch["ss_combined_annual"] = ss
+                 
+-        if "agi_prior_year" in profile:
+-            agi = st.number_input("Prior-year AGI", value=float(profile["agi_prior_year"]), step=1000.0)
+-            if agi != profile["agi_prior_year"]:
+-                patch["agi_prior_year"] = agi
++    if "agi_prior_year" in profile:
++        agi = st.number_input("Prior-year AGI", value=float(profile["agi_prior_year"]), step=1000.0)
++        if agi != profile["agi_prior_year"]:
++            patch["agi_prior_year"] = agi
+                 
+-        if "rmd_start_age" in profile:
+-            rmd = st.number_input("RMD Start Age", value=int(profile["rmd_start_age"]), step=1)
+-            if rmd != profile["rmd_start_age"]:
+-                patch["rmd_start_age"] = rmd
++    if "rmd_start_age" in profile:
++        rmd = st.number_input("RMD Start Age", value=int(profile["rmd_start_age"]), step=1)
++        if rmd != profile["rmd_start_age"]:
++            patch["rmd_start_age"] = rmd
+                 
+-        if "aggressiveness_score" in profile and isinstance(profile["aggressiveness_score"], dict) and "current_target" in profile["aggressiveness_score"]:
+-            curr_agg = profile["aggressiveness_score"]["current_target"]
+-            agg = st.slider("Risk Target (0=Conservative, 100=Aggressive)", 0, 100, int(curr_agg))
+-            if agg != curr_agg:
+-                new_agg = profile["aggressiveness_score"].copy()
+-                new_agg["current_target"] = agg
+-                patch["aggressiveness_score"] = new_agg
++    if "aggressiveness_score" in profile and isinstance(profile["aggressiveness_score"], dict) and "current_target" in profile["aggressiveness_score"]:
++        curr_agg = profile["aggressiveness_score"]["current_target"]
++        agg = st.slider("Risk Target (0=Conservative, 100=Aggressive)", 0, 100, int(curr_agg))
++        if agg != curr_agg:
++            new_agg = profile["aggressiveness_score"].copy()
++            new_agg["current_target"] = agg
++            patch["aggressiveness_score"] = new_agg
+                 
+-        st.markdown("")
+-        if st.button("Save Profile"):
+-            if patch:
+-                merged, errors = save_profile(patch, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+-                if errors:
+-                    for err in errors:
+-                        st.error(f"• {err}")
+-                else:
+-                    st.success("Profile saved successfully!")
+-                    st.rerun()
++    st.markdown("")
++    if st.button("Save Profile"):
++        if patch:
++            merged, errors = save_profile(patch, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
++            if errors:
++                for err in errors:
++                    st.error(f"• {err}")
+             else:
+-                st.info("No changes to save.")
++                st.success("Profile saved successfully!")
++                st.rerun()
++        else:
++            st.info("No changes to save.")
++
+ def _setup_sector_prefs_sidebar():
+     """Render sidebar controls for editing sector preferences."""
+     profile = load_profile(TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+     prefs = load_sector_preferences(profile)
+ 
+-    with st.sidebar.expander("🏷️ Sector Preferences", expanded=False):
+-        st.markdown("Set your sector tilts.")
+-        liked_str = ", ".join(prefs["liked_sectors"])
+-        avoided_str = ", ".join(prefs["avoided_sectors"])
++    st.subheader("🏷️ Sector Preferences")
++    st.markdown("Set your sector tilts.")
++    liked_str = ", ".join(prefs["liked_sectors"])
++    avoided_str = ", ".join(prefs["avoided_sectors"])
+ 
+-        with st.form("sector_prefs_form"):
+-            new_liked = st.text_input("Liked Sectors (comma-separated)", value=liked_str)
+-            new_avoided = st.text_input("Avoided Sectors (comma-separated)", value=avoided_str)
+-            new_tilt = st.slider("Tilt Strength", 0, 5, int(prefs["tilt_strength"]))
++    with st.form("sector_prefs_form"):
++        new_liked = st.text_input("Liked Sectors (comma-separated)", value=liked_str)
++        new_avoided = st.text_input("Avoided Sectors (comma-separated)", value=avoided_str)
++        new_tilt = st.slider("Tilt Strength", 0, 5, int(prefs["tilt_strength"]))
+ 
+-            if st.form_submit_button("Save Preferences"):
+-                new_prefs = {
+-                    "liked_sectors": [x.strip() for x in new_liked.split(",") if x.strip()],
+-                    "avoided_sectors": [x.strip() for x in new_avoided.split(",") if x.strip()],
+-                    "tilt_strength": new_tilt,
+-                }
+-                try:
+-                    save_sector_preferences(new_prefs, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
+-                    st.success("Sector preferences saved!")
+-                    st.rerun()
+-                except ValueError as e:
+-                    st.error(str(e))
++        if st.form_submit_button("Save Preferences"):
++            new_prefs = {
++                "liked_sectors": [x.strip() for x in new_liked.split(",") if x.strip()],
++                "avoided_sectors": [x.strip() for x in new_avoided.split(",") if x.strip()],
++                "tilt_strength": new_tilt,
++            }
++            try:
++                save_sector_preferences(new_prefs, TAX_PROFILE_PATH, CONSTRAINTS_PATH)
++                st.success("Sector preferences saved!")
++                st.rerun()
++            except ValueError as e:
++                st.error(str(e))
+@@ -342,6 +336,110 @@
+ # TAB IMPLEMENTATIONS
+ # ══════════════════════════════════════════════════════════════════════════════
+ 
++def tab_your_plan():
++    """Tab 0: New landing page UI (calm, outcome-first)."""
++    st.header("Your Plan — Retirement health at a glance")
++    st.write("A simple summary of your retirement plan and three recommended actions.")
++
++    holdings = load_holdings_with_mode()
++
++    # Load supporting inputs (best-effort; this is a UI summary tab)
++    cashflow = []
++    recs = []
++    try:
++        cashflow = load_csv_rows(CASHFLOW_PATH)
++        tax_profile = load_json(TAX_PROFILE_PATH)
++        constraints = load_json(CONSTRAINTS_PATH)
++        rmd_divisors = load_json(RMD_DIVISORS_PATH)
++        recs = generate_all_recommendations(holdings, tax_profile, constraints, cashflow, rmd_divisors)
++    except Exception:
++        pass
++
++    # Status badge based on recommendation severity (UI-only: reassurance framing)
++    high_sev = sum(1 for r in recs if getattr(r, "severity", "") == "high")
++    med_sev = sum(1 for r in recs if getattr(r, "severity", "") == "medium")
++    if high_sev > 0:
++        status_badge = "🔴 Action recommended now"
++    elif med_sev > 0:
++        status_badge = "🟡 Small adjustments recommended"
++    else:
++        status_badge = "🟢 Your plan is on track"
++
++    st.subheader(status_badge)
++
++    # Cashflow summary (used for Income Coverage)
++    income_items = [c for c in cashflow if c.get("category") == "income"]
++    expense_items = [
++        c for c in cashflow
++        if c.get("category") == "expense" and c.get("frequency") == "annual"
++    ]
++    total_income = sum(float(i.get("amount", 0) or 0) for i in income_items)
++    total_exp = sum(float(e.get("amount", 0) or 0) for e in expense_items)
++    coverage = (total_income / total_exp) if total_exp > 0 else 0.0
++
++    # These are intentionally NOT fabricated. Show placeholders until model outputs exist.
++    funding_ratio_display = "—"
++    probability_display = "—"
++
++    st.write(
++        f"Funding ratio {funding_ratio_display} — at current withdrawal pace, your plan has a "
++        f"{probability_display} chance of lasting through expected lifetime."
++    )
++
++    with st.expander("Why this status?"):
++        st.write(
++            "This summary is designed to be simple. The status is driven by the highest-priority planning "
++            "flags currently found (if any). You can review details in Recommendations when you're ready."
++        )
++        st.write(
++            "Some advanced metrics (like funding ratio and success probability) will appear here once they "
++            "are available from the planning engine. For now, this page emphasizes clarity and next steps."
++        )
++
++    col1, col2, col3 = st.columns(3)
++    col1.metric("Funding Ratio", funding_ratio_display)
++    col2.metric("Success Probability", probability_display)
++    col3.metric("Income Coverage", f"{coverage:.2f}×" if total_exp > 0 else "—")
++
++    st.divider()
++    st.subheader("This year — income vs expenses")
++    st.write(
++        f"**Projected Income:** ${total_income:,.0f}   •   "
++        f"**Estimated Expenses:** ${total_exp:,.0f}   •   "
++        f"**Surplus / Shortfall:** ${total_income - total_exp:,.0f}"
++    )
++
++    st.divider()
++    st.subheader("Top 3 Actions")
++    if recs:
++        for idx, rec in enumerate(recs[:3], start=1):
++            title = getattr(rec, "title", f"Recommendation {idx}")
++            desc = getattr(rec, "description", "")
++            impact = getattr(rec, "impact_estimate", "")
++            st.markdown(f"**{idx}. {title}**")
++            if impact:
++                st.caption(impact)
++            if desc:
++                st.write(desc)
++            c1, c2, c3 = st.columns([1, 1, 6])
++            with c1:
++                st.button("Review", key=f"plan_review_{idx}")
++            with c2:
++                st.button("See details", key=f"plan_details_{idx}")
++            with c3:
++                st.write("")
++            st.divider()
++    else:
++        st.write("No urgent actions required.")
++
++    st.markdown("**Quick Links**")
++    q1, q2, q3, q4 = st.columns(4)
++    with q1:
++        st.button("View portfolio")
++    with q2:
++        st.button("Open cash flow plan")
++    with q3:
++        st.button("Tax details")
++    with q4:
++        st.button("Advanced tools")
++
+ 
+ def _show_sector_exposure_panel(prefs=None):
+@@ -699,31 +753,39 @@
+         return  # Block the rest of the app until interaction is completed
+ 
+     st.title("📊 RICS – Retirement Income & Cash-flow Simulator")
+-    _setup_price_sidebar()
+-    _setup_holdings_editor()
+-    _setup_profile_editor()
+-    _setup_sector_prefs_sidebar()
+-    _setup_trades_sidebar()
++
++    with st.sidebar.expander("Advanced / Admin", expanded=False):
++        _setup_price_sidebar()
++        st.divider()
++        _setup_holdings_editor()
++        st.divider()
++        _setup_profile_editor()
++        st.divider()
++        _setup_sector_prefs_sidebar()
++        st.divider()
++        _setup_trades_sidebar()
+ 
+     tabs = st.tabs([
++        "Your Plan",
+         "Portfolio Overview",
+         "Cash Flow Plan",
+         "Tax Dashboard",
+         "Broker Import",
+         "Dividend Analysis",
+         "Rebalance Simulator",
+         "Recommendations",
+     ])
+ 
+     with tabs[0]:
+-        tab_portfolio_overview()
++        tab_your_plan()
+     with tabs[1]:
+-        tab_cashflow()
++        tab_portfolio_overview()
+     with tabs[2]:
+-        tab_tax_dashboard()
++        tab_cashflow()
+     with tabs[3]:
+-        tab_broker_import()
++        tab_tax_dashboard()
+     with tabs[4]:
+-        tab_dividend_analysis()
++        tab_broker_import()
+     with tabs[5]:
+-        tab_rebalance_simulator()
++        tab_dividend_analysis()
+     with tabs[6]:
+-        tab_recommendations()
++        tab_rebalance_simulator()
++    with tabs[7]:
++        tab_recommendations()
+ 
+ 
+ if __name__ == "__main__":
